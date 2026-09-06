@@ -1,11 +1,30 @@
-"""Validation, parsing and diagnostics for RUSIT 3.0 text."""
-from __future__ import annotations
+"""Валидатор грамматики РУСИТ 5.0."""
 
-import re
+from __future__ import annotations
 from dataclasses import dataclass, field
 
-from .core import GRAMMAR_PARTICLES, PHASE_PARTICLES, RELATION_PARTICLES
-from .translator import tokenize
+
+ZONE_ORDER = {
+    "не": 0, "был": 1, "буд": 1,
+    "про": 2, "сей": 3,
+    "кон": 4, "нач": 4, "пере": 4, "прод": 4,
+    "получ": 4, "перест": 4,
+    "ста": 5, "станов": 5,
+    "ся": 7,
+}
+
+BOUNDARY = {"кон", "нач", "пере", "прод", "получ", "перест"}
+
+INCOMPATIBLE = {
+    frozenset({"кон", "нач"}), frozenset({"кон", "пере"}),
+    frozenset({"кон", "прод"}), frozenset({"нач", "пере"}),
+    frozenset({"нач", "прод"}), frozenset({"пере", "прод"}),
+    frozenset({"про", "кон"}), frozenset({"про", "нач"}),
+    frozenset({"про", "пере"}), frozenset({"про", "прод"}),
+    frozenset({"про", "сей"}), frozenset({"про", "ста"}),
+    frozenset({"сей", "прод"}), frozenset({"сей", "кон"}),
+    frozenset({"ста", "кон"}), frozenset({"ста", "нач"}),
+}
 
 
 @dataclass
@@ -14,39 +33,59 @@ class ValidationResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
+    @property
+    def error(self) -> str | None:
+        """Совместимость со старым API."""
+        return self.errors[0] if self.errors else None
+
 
 class RusitValidator:
-    """Checks the most important normative RUSIT constraints."""
 
-    forbidden_endings = ("ами", "ями", "ого", "ему", "ыми", "ими", "ешь", "ете", "ут", "ют")
-
-    def validate(self, text: str) -> ValidationResult:
+    def validate(self, sentence: str) -> ValidationResult:
+        tokens = sentence.lower().split()
         errors: list[str] = []
         warnings: list[str] = []
-        tokens = [t for t in tokenize(text) if not re.fullmatch(r"[!?.,;:—-]", t)]
-        for i, tok in enumerate(tokens):
-            if tok in {"был", "буд"}:
-                if i + 1 < len(tokens) and tokens[i + 1] in {"был", "буд"}:
-                    errors.append(f"две временные частицы подряд: {tok} {tokens[i + 1]}")
-            if tok == "кон" and i + 1 < len(tokens) and tokens[i + 1] in PHASE_PARTICLES - {"прод"}:
-                errors.append("недопустимая последовательность: кон + граничная фаза")
-            if tok in RELATION_PARTICLES and i + 1 == len(tokens):
-                errors.append(f"реляционная частица без зависимого слова: {tok}")
-            if tok not in GRAMMAR_PARTICLES | RELATION_PARTICLES and tok.endswith(self.forbidden_endings):
-                warnings.append(f"возможная русская флексия вместо словарной формы: {tok}")
-        return ValidationResult(not errors, errors, warnings)
 
-    def explain(self, text: str) -> list[dict[str, str]]:
-        """Return token-level labels useful for teaching/debugging."""
-        labels = []
-        for tok in tokenize(text):
-            if tok in GRAMMAR_PARTICLES:
-                kind = "grammar-particle"
-            elif tok in RELATION_PARTICLES:
-                kind = "relation-particle"
-            elif re.fullmatch(r"[!?.,;:—-]", tok):
-                kind = "punctuation"
-            else:
-                kind = "lexeme"
-            labels.append({"token": tok, "kind": kind})
-        return labels
+        particles = [t for t in tokens if t in ZONE_ORDER]
+
+        # 1. Запрещённые пары
+        for i in range(len(particles)):
+            for j in range(i + 1, len(particles)):
+                pair = frozenset({particles[i], particles[j]})
+                if pair in INCOMPATIBLE:
+                    errors.append(
+                        f"Несовместимые частицы: '{particles[i]}' + '{particles[j]}'"
+                    )
+
+        # 2. Не более одной граничной
+        boundary_found = [p for p in particles if p in BOUNDARY]
+        if len(boundary_found) > 1:
+            errors.append(f"Более одной граничной частицы: {boundary_found}")
+
+        # 3. был и буд взаимоисключающие
+        if "был" in particles and "буд" in particles:
+            errors.append("был и буд взаимоисключающие")
+
+        # 4. Порядок зон
+        prev_zone = -1
+        for p in particles:
+            zone = ZONE_ORDER.get(p)
+            if zone is None:
+                continue
+            if zone < prev_zone:
+                errors.append(
+                    f"Нарушен порядок зон: '{p}' (зона {zone}) после зоны {prev_zone}"
+                )
+                break
+            prev_zone = zone
+
+        # 5. Незавершённые предлоги
+        for i, tok in enumerate(tokens):
+            if tok in ("у", "от", "к", "с", "в", "на", "из", "о", "би"):
+                if i + 1 >= len(tokens):
+                    errors.append(f"Предлог '{tok}' без зависимого слова")
+
+        return ValidationResult(ok=len(errors) == 0, errors=errors, warnings=warnings)
+
+    def is_valid(self, sentence: str) -> bool:
+        return self.validate(sentence).ok
