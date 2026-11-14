@@ -48,9 +48,15 @@ class RusitTranslator:
     def __init__(
         self,
         lexicon_path: str | Path = "rusit_lexicon.json",
+        db_path: str | Path | None = None,
     ):
-        with open(lexicon_path, encoding="utf-8") as f:
-            self.lexicon: dict = json.load(f)
+        if db_path is not None:
+            from .db import load_lexicon
+
+            self.lexicon: dict = load_lexicon(db_path)
+        else:
+            with open(lexicon_path, encoding="utf-8") as f:
+                self.lexicon: dict = json.load(f)
 
         self.verbs: Dict[str, str] = self.lexicon.get("verbs", {})
         self.aspect_verbs: Dict[str, str] = self.lexicon.get("aspect_verbs", {})

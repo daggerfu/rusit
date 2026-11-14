@@ -6,6 +6,7 @@
     pytest tests/test_rusit.py -v
 """
 
+import json
 import time
 
 import pytest
@@ -1245,3 +1246,124 @@ class TestPerformance:
             tr.translate(sentence)
         elapsed = time.perf_counter() - start
         assert elapsed < 10.0, f"Слишком медленно: {elapsed:.3f}s"
+
+
+# ═══════════════════════════════════════════════
+# 35. SQLITE-БАЗА ЛЕКСИКОНА
+# ═══════════════════════════════════════════════
+
+from pathlib import Path
+
+from rusit import LexiconDB, load_lexicon
+from rusit.cli import main as cli_main
+
+LEXICON_JSON = Path(__file__).parent / "rusit_lexicon.json"
+
+
+@pytest.fixture
+def lexicon_db(tmp_path):
+    """База, созданная из актуального JSON-лексикона."""
+    db_path = tmp_path / "lexicon.db"
+    with LexiconDB(db_path) as db:
+        db.import_json(LEXICON_JSON)
+    return db_path
+
+
+class TestLexiconDB:
+
+    def test_roundtrip_json_db_json(self, lexicon_db, tmp_path):
+        out = tmp_path / "export.json"
+        with LexiconDB(lexicon_db) as db:
+            db.export_json(out)
+        original = json.loads(LEXICON_JSON.read_text(encoding="utf-8"))
+        exported = json.loads(out.read_text(encoding="utf-8"))
+        assert exported["meta"] == original["meta"]
+        for section, content in original.items():
+            if section == "meta":
+                continue
+            if isinstance(content, list):
+                # Секции-множества: база хранит уникальные ключи без порядка
+                assert sorted(exported[section]) == sorted(set(content))
+            else:
+                assert exported[section] == content
+
+    def test_load_meta(self, lexicon_db):
+        lexicon = load_lexicon(lexicon_db)
+        assert lexicon["meta"]["version"] == "5.0"
+
+    def test_translator_with_db_matches_json(self, lexicon_db):
+        from_json = RusitTranslator(lexicon_path=str(LEXICON_JSON))
+        from_db = RusitTranslator(db_path=lexicon_db)
+        sentences = [
+            "Я прочитал новую книгу моего друга.",
+            "Мы будем строить дом.",
+            "Она не читает газету.",
+        ]
+        for sentence in sentences:
+            assert from_db.translate(sentence) == from_json.translate(sentence)
+
+    def test_add_custom_noun_affects_translation(self, lexicon_db):
+        with LexiconDB(lexicon_db) as db:
+            db.add("nouns", "автомобиль", "машин")
+        tr = RusitTranslator(db_path=lexicon_db)
+        assert tr.translate("Я вижу автомобиль.") == "я види машин"
+
+    def test_add_uses_canonical_form_for_yo(self, lexicon_db):
+        with LexiconDB(lexicon_db) as db:
+            db.add("nouns", "ПчЁЛА", "пчел")
+        assert LexiconDB(lexicon_db).get("nouns", "пчела") == "пчел"
+
+    def test_add_set_entry(self, lexicon_db):
+        with LexiconDB(lexicon_db) as db:
+            db.add("relative_adjectives", "берёзовый")
+            assert db.get("relative_adjectives", "березовый") == "березовый"
+            entries = dict(db.entries("relative_adjectives"))
+            assert "березовый" in entries
+
+    def test_remove_entry(self, lexicon_db):
+        with LexiconDB(lexicon_db) as db:
+            assert db.remove("nouns", "книга")
+            assert not db.remove("nouns", "несуществующее")
+            assert db.get("nouns", "книга") is None
+
+    def test_sections_listing(self, lexicon_db):
+        with LexiconDB(lexicon_db) as db:
+            sections = db.sections()
+        assert sections["verbs"] == "dict"
+        assert sections["telic_verbs"] == "set"
+
+
+class TestLexiconCLI:
+
+    def test_cli_init_and_translate(self, tmp_path, capsys):
+        db_path = tmp_path / "lexicon.db"
+        assert cli_main(["lexicon", "init", str(db_path), str(LEXICON_JSON)]) == 0
+        capsys.readouterr()
+        assert db_path.exists()
+        assert cli_main([
+            "translate", "--db", str(db_path), "Я читаю книгу.",
+        ]) == 0
+        assert capsys.readouterr().out.strip() == "я чита книга"
+
+    def test_cli_add_and_remove(self, tmp_path, capsys):
+        db_path = tmp_path / "lexicon.db"
+        cli_main(["lexicon", "init", str(db_path), str(LEXICON_JSON)])
+        assert cli_main([
+            "lexicon", "add", str(db_path), "nouns", "автомобиль", "машин",
+        ]) == 0
+        capsys.readouterr()
+        assert cli_main(["translate", "--db", str(db_path), "Я вижу автомобиль."]) == 0
+        assert "машин" in capsys.readouterr().out
+        assert cli_main([
+            "lexicon", "remove", str(db_path), "nouns", "автомобиль",
+        ]) == 0
+
+    def test_cli_export(self, lexicon_db, tmp_path):
+        out = tmp_path / "out.json"
+        assert cli_main(["lexicon", "export", str(lexicon_db), str(out)]) == 0
+        exported = json.loads(out.read_text(encoding="utf-8"))
+        assert exported["meta"]["version"] == "5.0"
+
+    def test_cli_list(self, lexicon_db, capsys):
+        assert cli_main(["lexicon", "list", str(lexicon_db)]) == 0
+        assert '"verbs": "dict"' in capsys.readouterr().out
