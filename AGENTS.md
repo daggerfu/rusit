@@ -21,12 +21,20 @@
 
 ```
 rusit/
+<<<<<<< HEAD
 ├── __init__.py        # публичный API: RusitTranslator, RusitValidator, ValidationResult, tokenize, build_demo_corpus, score_file, LexiconDB, load_lexicon
 ├── cli.py             # argparse-CLI: подкоманды translate / validate / explain / corpus (demo|score) / lexicon (init|export|add|remove|list)
 ├── translator.py      # RusitTranslator — русский → РУСИТ, правила §2–§18 спецификации (основной модуль)
 ├── validator.py       # RusitValidator — проверка порядка и совместимости частиц (§21), dataclass ValidationResult
 ├── corpus.py          # build_demo_corpus / score_file — CSV-корпус выровненных пар ru↔rusit
 ├── db.py              # LexiconDB — лексикон в SQLite (sqlite3, stdlib): meta/sections/entries, импорт/экспорт JSON, особые слова (add/remove)
+=======
+├── __init__.py        # публичный API: RusitTranslator, RusitValidator, ValidationResult, tokenize, build_demo_corpus, score_file
+├── cli.py             # argparse-CLI: подкоманды translate / validate / explain / corpus (demo|score)
+├── translator.py      # RusitTranslator — русский → РУСИТ, правила §2–§18 спецификации (основной модуль)
+├── validator.py       # RusitValidator — проверка порядка и совместимости частиц (§21), dataclass ValidationResult
+├── corpus.py          # build_demo_corpus / score_file — CSV-корпус выровненных пар ru↔rusit
+>>>>>>> 28ec487 (add some files)
 ├── core.py            # устаревший модуль (РУСИТ 3.0): не импортируется нигде, мёртвый код
 └── rusit_lexicon.json # устаревшая копия лексикона (см. ниже)
 tests/
@@ -37,9 +45,13 @@ rusit_lexicon.json     # актуальный лексикон, версия 5.0
 
 ### Лексикон
 
+<<<<<<< HEAD
 Переводчик загружает лексикон из JSON (`RusitTranslator(lexicon_path="rusit_lexicon.json")`) или из SQLite-базы (`RusitTranslator(db_path="lexicon.db")`). Важно: путь по умолчанию относителен — **команды нужно запускать из корня репозитория**, иначе файл не найден. Словарь содержит секции: `meta`, `particles` (ключ → форма частицы), `verbs`, `aspect_verbs`, `telic_verbs`, `qualifiers`, `relative_adjectives`, `nouns`, `pronouns`, `modal_predicates`, `discourse_markers`, `relative_pronouns`, `adverbs_blacklist`, `prepositions`, `conjunctions`. Все ключи нормализуются ё→е при загрузке.
 
 SQLite-хранилище (`rusit/db.py`, только стандартная библиотека sqlite3): таблицы `meta` (значения в JSON-кодировке — типы сохраняются), `sections` (name, kind: dict|set), `entries` (section, key, value; в секциях-множествах value = key, дубликаты и порядок не сохраняются). `LexiconDB.add()`/`remove()` — добавление особых слов; ключ нормализуется ё→е. База создаётся из JSON через `lexicon init` или `LexiconDB.import_json()`.
+=======
+Переводчик загружает лексикон из JSON (`RusitTranslator(lexicon_path="rusit_lexicon.json")`). Важно: путь по умолчанию относителен — **команды нужно запускать из корня репозитория**, иначе файл не найден. Словарь содержит секции: `meta`, `particles` (ключ → форма частицы), `verbs`, `aspect_verbs`, `telic_verbs`, `qualifiers`, `relative_adjectives`, `nouns`, `pronouns`, `modal_predicates`, `discourse_markers`, `relative_pronouns`, `adverbs_blacklist`, `prepositions`, `conjunctions`. Все ключи нормализуются ё→е при загрузке.
+>>>>>>> 28ec487 (add some files)
 
 В репозитории два лексикона: корневой `rusit_lexicon.json` (актуальный, v5.0, используется по умолчанию) и `rusit/rusit_lexicon.json` (старая версия с лексемами типа «чит» — не используется).
 
@@ -56,27 +68,37 @@ python -m rusit.cli validate "я был кон чита книга у я дру�
 python -m rusit.cli explain "ли ты чита книга?"
 python -m rusit.cli corpus demo corpus.csv
 python -m rusit.cli corpus score corpus.csv                   # {total, exact, valid}
+<<<<<<< HEAD
 python -m rusit.cli lexicon init lexicon.db [lexicon.json]    # база из JSON (по умолчанию rusit_lexicon.json)
 python -m rusit.cli lexicon export lexicon.db out.json
 python -m rusit.cli lexicon add lexicon.db nouns космолёт космолет   # особое слово; без значения → секция-множество
 python -m rusit.cli lexicon remove lexicon.db nouns космолёт
 python -m rusit.cli lexicon list lexicon.db [section]
 python -m rusit.cli translate --db lexicon.db "Я читаю книгу."
+=======
+>>>>>>> 28ec487 (add some files)
 ```
 
 Программный API:
 
 ```python
+<<<<<<< HEAD
 from rusit import RusitTranslator, RusitValidator, LexiconDB
+=======
+from rusit import RusitTranslator, RusitValidator
+>>>>>>> 28ec487 (add some files)
 tr = RusitTranslator()
 tr.translate("Мы будем строить дом.")
 tr.set_register("formal")   # formal | neutral | colloquial — режим фильтрации разговорных маркеров
 tr.imperative_of("читать")  # "читай"
+<<<<<<< HEAD
 
 tr_db = RusitTranslator(db_path="lexicon.db")  # лексикон из SQLite
 with LexiconDB("lexicon.db") as db:
     db.add("nouns", "космолёт", "космолет")    # добавить особое слово
     db.remove("nouns", "космолёт")
+=======
+>>>>>>> 28ec487 (add some files)
 ```
 
 Деплоя нет — это библиотека/CLI-утилита без CI, контейнеров и релизного процесса.

@@ -1,5 +1,5 @@
 """
-РУСИТ 4.1 — Полный набор тестов.
+РУСИТ 5.0 (со спецификацией 5.3.1) — полный набор тестов.
 Запуск: pytest tests/test_rusit.py -v
 """
 
@@ -37,19 +37,19 @@ class TestBasicSVO:
     """Простые предложения: подлежащее + сказуемое + дополнение."""
 
     def test_simple_present(self, tr):
-        assert tr.translate("Я читаю книгу.") == "я чит книга"
+        assert tr.translate("Я читаю книгу.") == "я чита книга"
 
     def test_simple_present_verb_only(self, tr):
-        assert tr.translate("Он спит.") == "он сп"
+        assert tr.translate("Он спит.") == "он спи"
 
     def test_simple_with_adverb(self, tr):
         result = tr.translate("Я быстро читаю книгу.")
         assert "быстро" in result
-        assert "чит" in result
+        assert "чита" in result
         assert "книга" in result
 
     def test_subject_verb(self, tr):
-        assert tr.translate("Она работает.") == "она работ"
+        assert tr.translate("Она работает.") == "она работа"
 
     def test_verb_with_prepositional_object(self, tr):
         result = tr.translate("Я живу в городе.")
@@ -73,7 +73,7 @@ class TestTense:
 
     def test_past(self, tr):
         result = tr.translate("Я читал книгу.")
-        assert result == "я был чит книга"
+        assert result == "я был чита книга"
 
     def test_past_feminine(self, tr):
         result = tr.translate("Она читала книгу.")
@@ -86,7 +86,7 @@ class TestTense:
 
     def test_future(self, tr):
         result = tr.translate("Я буду читать книгу.")
-        assert result == "я буд чит книга"
+        assert result == "я буд чита книга"
 
     def test_future_simple(self, tr):
         result = tr.translate("Мы будем строить дом.")
@@ -127,11 +127,11 @@ class TestAspect:
 
     def test_past_perfective(self, tr):
         result = tr.translate("Я прочитал книгу.")
-        assert result == "я был кон чит книга"
+        assert result == "я был кон чита книга"
 
     def test_future_perfective(self, tr):
         result = tr.translate("Я прочитаю книгу.")
-        assert result == "я буд кон чит книга"
+        assert result == "я буд кон чита книга"
 
     def test_perfective_close(self, tr):
         result = tr.translate("Они закрыли окна.")
@@ -244,7 +244,7 @@ class TestMutative:
     def test_sta_sky(self, tr):
         result = tr.translate("Небо стало тёмным.")
         assert "ста" in result
-        assert "тёмн" in result
+        assert "темн" in result  # ё нормализуется в е
 
     def test_stanov_profession(self, tr):
         result = tr.translate("Она стала врачом.")
@@ -270,7 +270,7 @@ class TestNegation:
 
     def test_simple_negation(self, tr):
         result = tr.translate("Я не читаю.")
-        assert result == "я не чит"
+        assert result == "я не чита"
 
     def test_negation_past(self, tr):
         result = tr.translate("Я не читал.")
@@ -393,7 +393,7 @@ class TestPrepositions:
 
     def test_nested_possession(self, tr):
         result = tr.translate("Дом брата друга.")
-        assert result.count("у") == 2
+        assert result.split().count("у") == 2
 
 
 # ═══════════════════════════════════════════════
@@ -512,25 +512,25 @@ class TestPronouns:
     """Местоимения неизменяемы."""
 
     def test_ya(self, tr):
-        assert tr.translate("Я читаю.") == "я чит"
+        assert tr.translate("Я читаю.") == "я чита"
 
     def test_ty(self, tr):
-        assert tr.translate("Ты читаешь.") == "ты чит"
+        assert tr.translate("Ты читаешь.") == "ты чита"
 
     def test_on(self, tr):
-        assert tr.translate("Он читает.") == "он чит"
+        assert tr.translate("Он читает.") == "он чита"
 
     def test_ona(self, tr):
-        assert tr.translate("Она читает.") == "она чит"
+        assert tr.translate("Она читает.") == "она чита"
 
     def test_my(self, tr):
-        assert tr.translate("Мы читаем.") == "мы чит"
+        assert tr.translate("Мы читаем.") == "мы чита"
 
     def test_vy(self, tr):
-        assert tr.translate("Вы читаете.") == "вы чит"
+        assert tr.translate("Вы читаете.") == "вы чита"
 
     def test_oni(self, tr):
-        assert tr.translate("Они читают.") == "они чит"
+        assert tr.translate("Они читают.") == "они чита"
 
     def test_dative_k(self, tr):
         result = tr.translate("Я дал книгу ему.")
@@ -596,7 +596,8 @@ class TestImperative:
 
     def test_imperative_plural(self, tr):
         result = tr.translate("Читайте!")
-        assert "читайте" in result
+        assert "читай" in result
+        assert "вы" in result  # вежливость через частицу вы
 
     def test_imperative_third_person(self, tr):
         result = tr.translate("Пусть он идёт!")

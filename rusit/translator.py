@@ -90,7 +90,8 @@ class RusitTranslator:
             k.lower().replace("ё", "е"): v for k, v in self.verbs.items()
         }
         self.qualifiers = {
-            k.lower().replace("ё", "е"): v for k, v in self.qualifiers.items()
+            k.lower().replace("ё", "е"): v.replace("ё", "е")
+            for k, v in self.qualifiers.items()
         }
         self.nouns = {
             k.lower().replace("ё", "е"): v for k, v in self.nouns.items()
@@ -185,9 +186,12 @@ class RusitTranslator:
             output.append(self._particle("question", "ли"))
 
         pending_preposition: Optional[str] = None
+        consumed: set[int] = set()
 
         for index, token in enumerate(tokens):
             if self._is_punctuation(token):
+                continue
+            if index in consumed:
                 continue
 
             # ── Союзы ──
@@ -286,6 +290,11 @@ class RusitTranslator:
                 output.extend(_POSSESSIVES[token].split())
                 continue
 
+            # ── Наречия закрытого списка → сохраняются как есть ──
+            if token in self.adverbs_blacklist:
+                output.append(token)
+                continue
+
             # ── ИМПЕРАТИВ ──
             imperative = self._process_imperative(token)
             if imperative is not None:
@@ -303,12 +312,19 @@ class RusitTranslator:
                     pending_preposition = None
 
                 if passive:
-                    agent = self._find_passive_agent(tokens, index)
-                    if agent is not None:
+                    agent_index = self._find_passive_agent(
+                        tokens, index
+                    )
+                    if agent_index is not None:
                         output.append(
                             self._particle("passive_agent", "би")
                         )
-                        output.extend(self._nominal_output(agent))
+                        output.extend(
+                            self._nominal_output(
+                                tokens[agent_index]
+                            )
+                        )
+                        consumed.add(agent_index)
                 continue
 
             # ── Родительный падеж → у ──
@@ -408,20 +424,28 @@ class RusitTranslator:
     ) -> Optional[tuple[list[str], bool]]:
 
         parses = self.morph.parse(token)
-        if not parses:
+        candidates = [
+            p
+            for p in parses
+            if p.tag.POS in {
+                "VERB", "INFN", "PRTF", "PRTS", "GRND", "ADJS",
+            }
+        ]
+        if not candidates:
             return None
 
+        # Предпочитаем глагольный разбор известного глагола:
+        # у форм типа «читаем» pymorphy ставит на первое место
+        # краткое причастие («читаемый»), что даёт ложный пассив.
         parse = next(
             (
-                p for p in parses
-                if p.tag.POS in {
-                    "VERB", "INFN", "PRTF", "GRND", "ADJS",
-                }
+                p
+                for p in candidates
+                if p.tag.POS in {"VERB", "INFN"}
+                and p.normal_form in self.verbs
             ),
-            None,
+            candidates[0],
         )
-        if parse is None:
-            return None
 
         lemma = parse.normal_form
 
@@ -429,7 +453,13 @@ class RusitTranslator:
             return None
 
         # ── Краткое причастие / прилагательное = пассив ──
-        if parse.tag.POS in {"PRTF", "ADJS"}:
+        if parse.tag.POS in {"PRTF", "PRTS", "ADJS"}:
+            # Защита: неизвестное слово с морфологическим разбором
+            # «краткое прилагательное» (напр. «зоркало») — не пассив,
+            # а неизвестное слово; оно пройдёт в вывод как есть.
+            verb_lemma = self._participle_to_verb(parse.normal_form)
+            if verb_lemma not in self.verbs:
+                return None
             return self._process_participle(
                 parse, token, tokens, index
             )
@@ -513,7 +543,7 @@ class RusitTranslator:
 
     def _is_passive_participle(self, token: str) -> bool:
         for p in self.morph.parse(token):
-            if p.tag.POS in {"PRTF", "ADJS"}:
+            if p.tag.POS in {"PRTF", "PRTS", "ADJS"}:
                 return True
         return False
 
@@ -691,12 +721,21 @@ class RusitTranslator:
         self, token: str
     ) -> bool:
         for p in self.morph.parse(token):
+            if p.tag.POS not in {
+                "NOUN", "ADJF", "PRON", "NPRO",
+            }:
+                continue
+            # Лемма из лексикона узнаётся независимо от score:
+            # иначе формы типа «темным» (score ≈ 0.4) уходят
+            # в неизвестные слова вместо усечения.
+            lemma = p.normal_form.replace("ё", "е")
             if (
-                p.score > 0.7
-                and p.tag.POS in {
-                    "NOUN", "ADJF", "PRON", "NPRO",
-                }
+                lemma in self.nouns
+                or lemma in self.qualifiers
+                or lemma in self.relative_adjectives
             ):
+                return True
+            if p.score > 0.7:
                 if p.normal_form != token:
                     return True
                 if token in self.nouns or token in self.qualifiers:
@@ -712,13 +751,13 @@ class RusitTranslator:
         parse = parses[0]
 
         if parse.tag.POS == "NOUN":
-            lemma = parse.normal_form
+            lemma = parse.normal_form.replace("ё", "е")
             if lemma in self.nouns:
                 return self.nouns[lemma]
             return lemma
 
         if parse.tag.POS in {"ADJF", "ADJS"}:
-            lemma = parse.normal_form
+            lemma = parse.normal_form.replace("ё", "е")
             if lemma in self.relative_adjectives:
                 return lemma
             if lemma in self.qualifiers:
@@ -729,7 +768,7 @@ class RusitTranslator:
             return token
 
         if parse.tag.POS in {"NPRO", "PRON"}:
-            lemma = parse.normal_form
+            lemma = parse.normal_form.replace("ё", "е")
             if lemma in self.pronouns:
                 return self.pronouns[lemma]
             if lemma in _PRONOUN_FALLBACKS:
@@ -778,12 +817,13 @@ class RusitTranslator:
 
     def _find_passive_agent(
         self, tokens: list[str], verb_index: int
-    ) -> Optional[str]:
-        for token in tokens[verb_index + 1:]:
+    ) -> Optional[int]:
+        for index in range(verb_index + 1, len(tokens)):
+            token = tokens[index]
             if self._is_punctuation(token):
                 continue
             if self._is_instrumental(token):
-                return token
+                return index
             if self._is_nominal(token):
                 return None
         return None
