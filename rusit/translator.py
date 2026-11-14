@@ -47,6 +47,7 @@ class RusitTranslator:
 
     def __init__(
         self,
+        use_spacy: bool = True,
         lexicon_path: str | Path = "rusit_lexicon.json",
         db_path: str | Path | None = None,
     ):
