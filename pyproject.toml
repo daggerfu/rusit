@@ -10,3 +10,7 @@ requires-python = ">=3.10"
 
 [project.scripts]
 rusit = "rusit.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
