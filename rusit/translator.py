@@ -197,6 +197,10 @@ class RusitTranslator:
 
         tokens = self._normalize_imperative_constructions(tokens)
 
+        # Причастные обороты → «который» + клауза (§15.3):
+        # перестройка порядка, а не замена окончаний.
+        tokens = self._restructure_participles(tokens)
+
         question = "?" in tokens
         exclamation = "!" in tokens
         meaningful = [
@@ -469,6 +473,98 @@ class RusitTranslator:
         return result
 
     # ═══════════════════════════════════════════
+    # ПРИЧАСТНЫЕ ОБОРОТЫ → «который» + КЛАУЗА (§15.3)
+    # ═══════════════════════════════════════════
+
+    def _restructure_participles(self, tokens: list[str]) -> list[str]:
+        """Причастий в РУСИТ нет: определительное причастие
+        перестраивается в относительную клаузу.
+
+        Постпозитив (требует запятой): «дом, построенный …»
+        → «дом, который кон строи …».
+        Препозитив (согласование по роду и числу):
+        «созданные ранее артефакты»
+        → «артефакт который кон созда ранее».
+        Предикативный пассив без запятой не трогаем (§14).
+        """
+        result = list(tokens)
+        i = 0
+        while i < len(result):
+            token = result[i]
+            if not self._is_attributive_participle(token):
+                i += 1
+                continue
+
+            # Постпозитив: NOUN "," PART
+            if (
+                i >= 2
+                and result[i - 1] == ","
+                and self._is_noun_token(result[i - 2])
+            ):
+                head = result[i - 2]
+                result[i - 2 : i + 1] = [head, ",", "который", token]
+                i += 3
+                continue
+
+            # Препозитив: PART (ADVB)* NOUN с согласованием
+            j = i + 1
+            while j < len(result) and self._is_adverb_token(result[j]):
+                j += 1
+            if (
+                j < len(result)
+                and self._is_noun_token(result[j])
+                and not self._is_animate_instrumental(result[j])
+                and self._agrees_in_gn(token, result[j])
+            ):
+                noun = result[j]
+                del result[j]
+                result[i:i] = [noun, "который"]
+                i += 3
+                continue
+
+            i += 1
+        return result
+
+    def _is_attributive_participle(self, token: str) -> bool:
+        for p in self.morph.parse(token):
+            if p.tag.POS not in {"PRTF", "PRTS"}:
+                continue
+            if self._participle_to_verb(p.normal_form) in self.verbs:
+                return True
+        return False
+
+    def _is_noun_token(self, token: str) -> bool:
+        return any(
+            p.tag.POS == "NOUN"
+            for p in self.morph.parse(token)
+        )
+
+    def _is_adverb_token(self, token: str) -> bool:
+        return any(
+            p.tag.POS == "ADVB"
+            for p in self.morph.parse(token)
+        )
+
+    def _agrees_in_gn(self, participle: str, noun: str) -> bool:
+        """Согласование причастия с существительным: число обязательно,
+        род — когда у причастия он выражен (во мн.ч. pymorphy
+        род причастия пустой, а существительное сохраняет)."""
+        p_gn = [
+            (p.tag.gender, p.tag.number)
+            for p in self.morph.parse(participle)
+            if p.tag.POS in {"PRTF", "PRTS"}
+        ]
+        for p in self.morph.parse(noun):
+            if p.tag.POS != "NOUN":
+                continue
+            for gender, number in p_gn:
+                if p.tag.number != number:
+                    continue
+                if gender is None or gender == p.tag.gender:
+                    return True
+        return False
+
+    # ═══════════════════════════════════════════
     # пусть / давайте
     # ═══════════════════════════════════════════
 
@@ -656,8 +752,15 @@ class RusitTranslator:
     ) -> tuple[list[str], bool]:
         result: list[str] = []
 
-        # Время НЕ добавляем — оно придёт через токен "был"
-        result.append(self._particle("telic", "кон"))
+        # Граничная частица: завершённость. Завершённый пассив —
+        # кон; действительное причастие несовершенного вида
+        # («человек, который сиди») — без частицы.
+        aspect = parse.tag.aspect
+        tag_str = str(parse.tag)
+        passive = "pssv" in tag_str
+        past = "past" in tag_str
+        if aspect == "perf" or (passive and past):
+            result.append(self._particle("telic", "кон"))
 
         verb_lemma = self._participle_to_verb(parse.normal_form)
         result.append(self._verb_lexeme(verb_lemma))
