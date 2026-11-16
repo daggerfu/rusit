@@ -225,40 +225,64 @@ class TestPhase:
 
 
 # ═══════════════════════════════════════════════
-# 6. МУТАТИВ (ста / станов)
+# 6. МУТАТИВ (ста)
 # ═══════════════════════════════════════════════
 
 class TestMutative:
-    """ста + прилагательное, станов + существительное."""
+    """Единственная частица мутатива — ста (§7.6)."""
 
     def test_sta_adjective(self, tr):
         result = tr.translate("Город стал тихим.")
         assert "ста" in result
-        assert "тих" in result
+        assert "тихий" in result
 
     def test_sta_state(self, tr):
         result = tr.translate("Вода стала холодной.")
         assert "ста" in result
-        assert "холодн" in result
+        assert "холодный" in result
 
     def test_sta_sky(self, tr):
         result = tr.translate("Небо стало тёмным.")
         assert "ста" in result
-        assert "темн" in result  # ё нормализуется в е
+        assert "темный" in result  # ё нормализуется в е
 
-    def test_stanov_profession(self, tr):
+    def test_sta_profession(self, tr):
         result = tr.translate("Она стала врачом.")
-        assert "станов" in result
+        assert "ста" in result
+        assert "станов" not in result
         assert "врач" in result
 
-    def test_stanov_role(self, tr):
+    def test_sta_role(self, tr):
         result = tr.translate("Он стал лидером.")
-        assert "станов" in result
+        assert "ста" in result
+        assert "станов" not in result
 
     def test_sta_past(self, tr):
         result = tr.translate("Он стал грустным.")
         assert "ста" in result
-        assert "грустн" in result
+        assert "грустный" in result
+
+    def test_sta_perfective(self, tr):
+        result = tr.translate("Город стал тихим.")
+        assert "кон ста" in result
+        assert "тихий" in result
+
+    def test_sta_future_perfective(self, tr):
+        result = tr.translate("Она станет врачом.")
+        assert "буд кон ста" in result
+        assert "врач" in result
+
+    def test_sta_imperfective(self, tr):
+        result = tr.translate("Город становится тихим.")
+        assert "ста" in result
+        assert "тихий" in result
+        assert "станови" not in result
+        assert "ся" not in result
+
+    def test_sta_past_imperfective(self, tr):
+        result = tr.translate("Город становился тихим.")
+        assert "был ста" in result
+        assert "тихий" in result
 
 
 # ═══════════════════════════════════════════════
@@ -311,6 +335,13 @@ class TestQuestions:
         result = tr.translate("Он приходил?")
         assert result.startswith("ли")
         assert "был" in result
+
+    def test_polar_question_punctuation(self, tr):
+        assert tr.translate("Ты меня любишь?") == "ли ты я люби?"
+
+    def test_wh_question_punctuation(self, tr):
+        result = tr.translate("Кто читает книгу?")
+        assert result.endswith("?")
 
     def test_wh_question_kto(self, tr):
         result = tr.translate("Кто читает книгу?")
@@ -424,28 +455,30 @@ class TestPassive:
 # ═══════════════════════════════════════════════
 
 class TestAdjectives:
-    """Качественные → усечение, относительные → полная форма."""
+    """Один тип: качественные и относительные — полная форма (§5.2)."""
 
-    def test_qualitative_truncation(self, tr):
+    def test_qualitative_full_form(self, tr):
         result = tr.translate("Большой дом.")
-        assert "больш" in result
+        assert "большой" in result
         assert "дом" in result
-        assert "большой" not in result
 
     def test_qualitative_krasivyy(self, tr):
         result = tr.translate("Красивый дом.")
-        assert "красив" in result
-        assert "красивый" not in result
+        assert "красивый" in result
 
     def test_qualitative_novyy(self, tr):
         result = tr.translate("Новая книга.")
-        assert "нов" in result
-        assert "новый" not in result
+        assert "новый" in result
         assert "новая" not in result
 
     def test_qualitative_tikhiy(self, tr):
         result = tr.translate("Тихий город.")
-        assert "тих" in result
+        assert "тихий" in result
+
+    def test_inflected_form_normalized(self, tr):
+        result = tr.translate("Большого дома нет.")
+        assert "большой" in result
+        assert "большого" not in result
 
     def test_relative_preserved(self, tr):
         result = tr.translate("Деревянный стол.")
@@ -462,12 +495,12 @@ class TestAdjectives:
     def test_comparative(self, tr):
         result = tr.translate("Более большой дом.")
         assert "более" in result
-        assert "больш" in result
+        assert "большой" in result
 
     def test_superlative(self, tr):
         result = tr.translate("Самый большой дом.")
         assert "самый" in result
-        assert "больш" in result
+        assert "большой" in result
 
 
 # ═══════════════════════════════════════════════
@@ -567,7 +600,7 @@ class TestSubordinateClauses:
         assert "когда" in result
         assert "зима" in result
         assert "ста" in result
-        assert "тих" in result
+        assert "тихий" in result
 
     def test_esli_clause(self, tr):
         result = tr.translate("Если ты придёшь, я буду рад.")
@@ -579,29 +612,29 @@ class TestSubordinateClauses:
 # ═══════════════════════════════════════════════
 
 class TestImperative:
-    """Повелительное наклонение."""
+    """Императив — неизменяемая лексема без суффиксов (§8)."""
 
     def test_imperative_i_final(self, tr):
         result = tr.translate("Иди!")
         assert "иди" in result
 
-    def test_imperative_a_final(self, tr):
-        result = tr.translate("Читай!")
-        assert "читай" in result
+    def test_imperative_exclamation(self, tr):
+        assert tr.translate("Иди!") == "иди!"
+
+    def test_imperative_lexeme(self, tr):
+        assert tr.translate("Читай!") == "чита!"
+        assert tr.imperative_of("читать") == "чита"
 
     def test_imperative_negative(self, tr):
-        result = tr.translate("Не читай!")
-        assert "не" in result
-        assert "читай" in result
+        assert tr.translate("Не читай!") == "не чита!"
 
     def test_imperative_plural(self, tr):
-        result = tr.translate("Читайте!")
-        assert "читай" in result
-        assert "вы" in result  # вежливость через частицу вы
+        assert tr.translate("Читайте!") == "вы чита!"
 
     def test_imperative_third_person(self, tr):
         result = tr.translate("Пусть он идёт!")
         assert "да" in result
+        assert "иди" in result
 
 
 # ═══════════════════════════════════════════════
@@ -632,61 +665,73 @@ class TestValidatorValid:
     """Валидатор принимает корректные конструкции."""
 
     def test_simple_verb(self, validator):
-        assert validator.validate("я чит книга").ok
+        assert validator.validate("я чита книга").ok
 
     def test_past_tense(self, validator):
-        assert validator.validate("я был чит книга").ok
+        assert validator.validate("я был чита книга").ok
 
     def test_future_tense(self, validator):
-        assert validator.validate("я буд чит книга").ok
+        assert validator.validate("я буд чита книга").ok
 
     def test_perfective(self, validator):
-        assert validator.validate("я кон чит книга").ok
+        assert validator.validate("я кон чита книга").ok
 
     def test_past_perfective(self, validator):
-        assert validator.validate("я был кон чит книга").ok
+        assert validator.validate("я был кон чита книга").ok
 
     def test_future_perfective(self, validator):
-        assert validator.validate("я буд кон чит книга").ok
+        assert validator.validate("я буд кон чита книга").ok
 
     def test_negation(self, validator):
-        assert validator.validate("я не чит").ok
+        assert validator.validate("я не чита").ok
 
     def test_negation_past(self, validator):
-        assert validator.validate("я не был чит").ok
+        assert validator.validate("я не был чита").ok
 
     def test_inchoative(self, validator):
-        assert validator.validate("я нач чит").ok
+        assert validator.validate("я нач чита").ok
 
     def test_cessative(self, validator):
-        assert validator.validate("я пере чит").ok
+        assert validator.validate("я пере чита").ok
 
     def test_continuative(self, validator):
-        assert validator.validate("я прод чит").ok
+        assert validator.validate("я прод чита").ok
 
     def test_past_inchoative(self, validator):
-        assert validator.validate("я был нач чит").ok
+        assert validator.validate("я был нач чита").ok
 
     def test_mutative(self, validator):
-        assert validator.validate("город ста тих").ok
+        assert validator.validate("город ста тихий").ok
 
-    def test_stanov(self, validator):
-        assert validator.validate("он станов врач").ok
+    def test_mutative_noun(self, validator):
+        assert validator.validate("он ста врач").ok
+
+    def test_perfective_mutative(self, validator):
+        assert validator.validate("он кон ста тихий").ok
+
+    def test_inchoative_mutative(self, validator):
+        assert validator.validate("он нач ста тихий").ok
+
+    def test_acquisition_mutative(self, validator):
+        assert validator.validate("он получ ста врач").ok
+
+    def test_loss_mutative(self, validator):
+        assert validator.validate("он перест ста врач").ok
 
     def test_experiential(self, validator):
-        assert validator.validate("я про чит книга").ok
+        assert validator.validate("я про чита книга").ok
 
     def test_progressive(self, validator):
-        assert validator.validate("я сей чит").ok
+        assert validator.validate("я сей чита").ok
 
     def test_past_progressive(self, validator):
-        assert validator.validate("я был сей чит").ok
+        assert validator.validate("я был сей чита").ok
 
     def test_reflexive(self, validator):
         assert validator.validate("он умыва ся").ok
 
     def test_full_valid_chain(self, validator):
-        assert validator.validate("я не был нач чит").ok
+        assert validator.validate("я не был нач чита").ok
 
 
 # ═══════════════════════════════════════════════
@@ -697,63 +742,71 @@ class TestValidatorInvalid:
     """Валидатор отвергает некорректные конструкции."""
 
     def test_double_boundary_kon_nach(self, validator):
-        result = validator.validate("я кон нач чит")
+        result = validator.validate("я кон нач чита")
         assert not result.ok
 
     def test_double_boundary_kon_pere(self, validator):
-        result = validator.validate("я кон пере чит")
+        result = validator.validate("я кон пере чита")
         assert not result.ok
 
     def test_double_boundary_kon_prod(self, validator):
-        result = validator.validate("я кон прод чит")
+        result = validator.validate("я кон прод чита")
         assert not result.ok
 
     def test_double_boundary_nach_pere(self, validator):
-        result = validator.validate("я нач пере чит")
+        result = validator.validate("я нач пере чита")
         assert not result.ok
 
     def test_double_boundary_nach_prod(self, validator):
-        result = validator.validate("я нач прод чит")
+        result = validator.validate("я нач прод чита")
         assert not result.ok
 
     def test_double_boundary_pere_prod(self, validator):
-        result = validator.validate("я пере прод чит")
+        result = validator.validate("я пере прод чита")
+        assert not result.ok
+
+    def test_double_boundary_kon_poluch(self, validator):
+        result = validator.validate("я кон получ зна")
+        assert not result.ok
+
+    def test_double_boundary_poluch_perest(self, validator):
+        result = validator.validate("я получ перест зна")
         assert not result.ok
 
     def test_pro_with_kon(self, validator):
-        result = validator.validate("я про кон чит")
+        result = validator.validate("я про кон чита")
+        assert not result.ok
+
+    def test_pro_with_poluch(self, validator):
+        result = validator.validate("я про получ зна")
+        assert not result.ok
+
+    def test_pro_with_perest(self, validator):
+        result = validator.validate("я про перест люби")
         assert not result.ok
 
     def test_pro_with_sey(self, validator):
-        result = validator.validate("я про сей чит")
+        result = validator.validate("я про сей чита")
         assert not result.ok
 
     def test_pro_with_sta(self, validator):
-        result = validator.validate("я про ста тих")
+        result = validator.validate("я про ста тихий")
         assert not result.ok
 
     def test_sey_with_prod(self, validator):
-        result = validator.validate("я сей прод чит")
+        result = validator.validate("я сей прод чита")
         assert not result.ok
 
     def test_sey_with_kon(self, validator):
-        result = validator.validate("я сей кон чит")
-        assert not result.ok
-
-    def test_sta_with_kon(self, validator):
-        result = validator.validate("он кон ста тих")
-        assert not result.ok
-
-    def test_sta_with_nach(self, validator):
-        result = validator.validate("он нач ста тих")
+        result = validator.validate("я сей кон чита")
         assert not result.ok
 
     def test_wrong_order_sey_before_byl(self, validator):
-        result = validator.validate("я сей был чит")
+        result = validator.validate("я сей был чита")
         assert not result.ok
 
     def test_wrong_order_kon_before_ne(self, validator):
-        result = validator.validate("я кон не чит")
+        result = validator.validate("я кон не чита")
         assert not result.ok
 
 
@@ -765,13 +818,13 @@ class TestValidatorErrors:
     """Валидатор возвращает понятные сообщения."""
 
     def test_error_message_for_incompatible(self, validator):
-        result = validator.validate("я кон нач чит")
+        result = validator.validate("я кон нач чита")
         assert not result.ok
         assert result.error is not None
         assert "кон" in result.error or "нач" in result.error
 
     def test_error_message_for_order(self, validator):
-        result = validator.validate("я сей был чит")
+        result = validator.validate("я сей был чита")
         assert not result.ok
         assert result.error is not None
 
@@ -802,6 +855,14 @@ class TestEdgeCases:
         result = tr.translate("У меня 3 книги.")
         assert "3" in result
 
+    def test_preserve_punctuation(self, tr):
+        assert tr.translate(
+            "Я читаю книгу, а он спит.", preserve_punctuation=True
+        ) == "я чита книга, а он спи."
+
+    def test_drop_punctuation_by_default(self, tr):
+        assert tr.translate("Я читаю книгу.") == "я чита книга"
+
     def test_dash_in_text(self, tr):
         result = tr.translate("Я — человек.")
         assert "человек" in result
@@ -822,7 +883,7 @@ class TestIntegration:
         assert "кон" in result or "приход" in result
         assert "город" in result
         assert "ста" in result
-        assert "тих" in result
+        assert "тихий" in result
 
     def test_people_closed_windows(self, tr):
         text = "Люди закрыли окна."
@@ -857,7 +918,7 @@ class TestIntegration:
         assert "три" in result
         assert "кон" in result
         assert "приход" in result or "прилет" in result
-        assert "нов" in result
+        assert "новый" in result
         assert "планета" in result
 
 
@@ -955,46 +1016,49 @@ class TestParametrized:
         ("тихий", "город"),
         ("холодный", "ветер"),
     ])
-    def test_qualitative_adjectives_truncated(self, tr, adjective, noun):
+    def test_qualitative_adjectives_full_form(self, tr, adjective, noun):
         result = tr.translate(f"{adjective.capitalize()} {noun}.")
-        # Усечённая форма должна быть без -ый/-ий/-ой
-        assert adjective not in result, f"'{adjective}' не должно быть в '{result}'"
+        assert adjective in result, f"'{adjective}' должно быть в '{result}'"
 
     @pytest.mark.parametrize("sentence", [
-        "я был чит книга",
-        "я буд чит книга",
-        "я кон чит книга",
-        "я не чит",
-        "я нач чит",
-        "я пере чит",
-        "я прод чит",
-        "город ста тих",
-        "он станов врач",
-        "я про чит книга",
-        "я сей чит",
-        "я был кон чит книга",
-        "я буд кон чит книга",
-        "я не был чит",
-        "я не буд чит",
+        "я был чита книга",
+        "я буд чита книга",
+        "я кон чита книга",
+        "я не чита",
+        "я нач чита",
+        "я пере чита",
+        "я прод чита",
+        "город ста тихий",
+        "он ста врач",
+        "он кон ста тихий",
+        "он нач ста тихий",
+        "он получ ста врач",
+        "он перест ста врач",
+        "я про чита книга",
+        "я сей чита",
+        "я был кон чита книга",
+        "я буд кон чита книга",
+        "я не был чита",
+        "я не буд чита",
     ])
     def test_valid_sequences(self, validator, sentence):
         result = validator.validate(sentence)
         assert result.ok, f"Должно быть валидно: '{sentence}'. Ошибка: {result.error}"
 
     @pytest.mark.parametrize("sentence", [
-        "я кон нач чит",
-        "я кон пере чит",
-        "я кон прод чит",
-        "я нач пере чит",
-        "я нач прод чит",
-        "я пере прод чит",
-        "я про кон чит",
-        "я про сей чит",
-        "я сей прод чит",
-        "я сей кон чит",
-        "я кон ста тих",
-        "я нач ста тих",
-        "я про ста тих",
+        "я кон нач чита",
+        "я кон пере чита",
+        "я кон прод чита",
+        "я нач пере чита",
+        "я нач прод чита",
+        "я пере прод чита",
+        "я про кон чита",
+        "я про получ зна",
+        "я про перест люби",
+        "я про сей чита",
+        "я сей прод чита",
+        "я сей кон чита",
+        "я про ста тихий",
     ])
     def test_invalid_sequences(self, validator, sentence):
         result = validator.validate(sentence)

@@ -1,142 +1,74 @@
-# AGENTS.md — руководство для AI-агентов по проекту rusit
+# AGENTS.md — rusit
 
-## Обзор проекта
+Python package/CLI for translating Russian into **RUSIT**, an analytic language
+with immutable lexemes and grammatical particles (`был`, `буд`, `кон`, `не`,
+`ли`, `ста`, `ся`, `би`, …). No services, network, build step, or deployment.
 
-**rusit** — набор утилит для работы с **РУСИТ**: искусственным радикально-аналитическим языком на основе русской лексики. Лексемы в РУСИТ неизменяемы; все грамматические значения (время, вид, фаза, отрицание, вопрос, пассив, посессив) передаются служебными частицами (был, буд, кон, нач, пере, прод, получ, перест, ста, станов, не, ли, бы, да, ся, би, есть…) и порядком слов. Базовый порядок слов — SVO.
+## Setup and commands
 
-Проект — прототип/исследование языка. Это обычный Python-пакет (setuptools), установка через `pip install -e .`, точка входа — CLI-команда `rusit` и модуль `python -m rusit.cli`.
-
-Нормативные документы по языку (читаются, кодом не используются):
-- `rusit.md` — спецификация РУСИТ 5.0, ревизия 2 (закоммичена).
-- `РУСИТ 5.3.1 — Полная согласованная спецификация.md` — самая свежая редакция (по состоянию на 2026-11-14 в git не закоммичена, файл untracked). Именно она отражает актуальное состояние языка.
-
-## Технологический стек
-
-- Python ≥ 3.10 (разработка ведётся на 3.12).
-- **pymorphy3** — морфологический анализатор русского языка; обязательная зависимость `rusit/translator.py`. Внимание: в `pyproject.toml` зависимости **не объявлены** — пакет нужно доустановить вручную (`pip install pymorphy3`).
-- pytest — для тестов (тоже не задекларирован).
-- README устарел: он утверждает, что проект использует только стандартную библиотеку. На самом деле без pymorphy3 транслятор не работает.
-
-## Структура кода
-
-```
-rusit/
-<<<<<<< HEAD
-├── __init__.py        # публичный API: RusitTranslator, RusitValidator, ValidationResult, tokenize, build_demo_corpus, score_file, LexiconDB, load_lexicon
-├── cli.py             # argparse-CLI: подкоманды translate / validate / explain / corpus (demo|score) / lexicon (init|export|add|remove|list)
-├── translator.py      # RusitTranslator — русский → РУСИТ, правила §2–§18 спецификации (основной модуль)
-├── validator.py       # RusitValidator — проверка порядка и совместимости частиц (§21), dataclass ValidationResult
-├── corpus.py          # build_demo_corpus / score_file — CSV-корпус выровненных пар ru↔rusit
-├── db.py              # LexiconDB — лексикон в SQLite (sqlite3, stdlib): meta/sections/entries, импорт/экспорт JSON, особые слова (add/remove)
-=======
-├── __init__.py        # публичный API: RusitTranslator, RusitValidator, ValidationResult, tokenize, build_demo_corpus, score_file
-├── cli.py             # argparse-CLI: подкоманды translate / validate / explain / corpus (demo|score)
-├── translator.py      # RusitTranslator — русский → РУСИТ, правила §2–§18 спецификации (основной модуль)
-├── validator.py       # RusitValidator — проверка порядка и совместимости частиц (§21), dataclass ValidationResult
-├── corpus.py          # build_demo_corpus / score_file — CSV-корпус выровненных пар ru↔rusit
->>>>>>> 28ec487 (add some files)
-├── core.py            # устаревший модуль (РУСИТ 3.0): не импортируется нигде, мёртвый код
-└── rusit_lexicon.json # устаревшая копия лексикона (см. ниже)
-tests/
-└── test_rusit.py      # устаревший набор тестов (РУСИТ 4.1), ссылается на удалённый параметр use_spacy — НЕ запускается
-test_rusit.py          # актуальный набор тестов (РУСИТ 5.0, ревизия 2)
-rusit_lexicon.json     # актуальный лексикон, версия 5.0 (meta.version = "5.0")
-```
-
-### Лексикон
-
-<<<<<<< HEAD
-Переводчик загружает лексикон из JSON (`RusitTranslator(lexicon_path="rusit_lexicon.json")`) или из SQLite-базы (`RusitTranslator(db_path="lexicon.db")`). Важно: путь по умолчанию относителен — **команды нужно запускать из корня репозитория**, иначе файл не найден. Словарь содержит секции: `meta`, `particles` (ключ → форма частицы), `verbs`, `aspect_verbs`, `telic_verbs`, `qualifiers`, `relative_adjectives`, `nouns`, `pronouns`, `modal_predicates`, `discourse_markers`, `relative_pronouns`, `adverbs_blacklist`, `prepositions`, `conjunctions`. Все ключи нормализуются ё→е при загрузке.
-
-SQLite-хранилище (`rusit/db.py`, только стандартная библиотека sqlite3): таблицы `meta` (значения в JSON-кодировке — типы сохраняются), `sections` (name, kind: dict|set), `entries` (section, key, value; в секциях-множествах value = key, дубликаты и порядок не сохраняются). `LexiconDB.add()`/`remove()` — добавление особых слов; ключ нормализуется ё→е. База создаётся из JSON через `lexicon init` или `LexiconDB.import_json()`.
-=======
-Переводчик загружает лексикон из JSON (`RusitTranslator(lexicon_path="rusit_lexicon.json")`). Важно: путь по умолчанию относителен — **команды нужно запускать из корня репозитория**, иначе файл не найден. Словарь содержит секции: `meta`, `particles` (ключ → форма частицы), `verbs`, `aspect_verbs`, `telic_verbs`, `qualifiers`, `relative_adjectives`, `nouns`, `pronouns`, `modal_predicates`, `discourse_markers`, `relative_pronouns`, `adverbs_blacklist`, `prepositions`, `conjunctions`. Все ключи нормализуются ё→е при загрузке.
->>>>>>> 28ec487 (add some files)
-
-В репозитории два лексикона: корневой `rusit_lexicon.json` (актуальный, v5.0, используется по умолчанию) и `rusit/rusit_lexicon.json` (старая версия с лексемами типа «чит» — не используется).
-
-## Сборка, запуск, тестирование
+Run everything from the repo root: the default lexicon path is the relative
+`rusit_lexicon.json`.
 
 ```bash
-pip install -e .          # установка пакета (setuptools, pyproject.toml)
-pip install pymorphy3 pytest  # недекларированные зависимости
-
-pytest test_rusit.py -v   # актуальные тесты — запускать из корня репозитория
-
-python -m rusit.cli translate "Я прочитал новую книгу моего друга."
-python -m rusit.cli validate "я был кон чита книга у я друг"   # exit 0/1
-python -m rusit.cli explain "ли ты чита книга?"
-python -m rusit.cli corpus demo corpus.csv
-python -m rusit.cli corpus score corpus.csv                   # {total, exact, valid}
-<<<<<<< HEAD
-python -m rusit.cli lexicon init lexicon.db [lexicon.json]    # база из JSON (по умолчанию rusit_lexicon.json)
-python -m rusit.cli lexicon export lexicon.db out.json
-python -m rusit.cli lexicon add lexicon.db nouns космолёт космолет   # особое слово; без значения → секция-множество
-python -m rusit.cli lexicon remove lexicon.db nouns космолёт
-python -m rusit.cli lexicon list lexicon.db [section]
-python -m rusit.cli translate --db lexicon.db "Я читаю книгу."
-=======
->>>>>>> 28ec487 (add some files)
+python3 -m pip install -e . pymorphy3 pytest   # python3; `python` may not exist
+python3 -m pytest tests -q                     # full suite: 236 tests (slow, 1–3 min)
+python3 -m pytest tests/test_rusit.py::TestBasicSVO::test_simple_present -q
 ```
 
-Программный API:
+`pyproject.toml` declares no dependencies, but `rusit/translator.py` hard-imports
+`pymorphy3`; pytest is also undeclared. There is no CI, lint, formatter, or
+typecheck config — pytest is the only verification. The suite is slow because
+each fixture constructs `pymorphy3.MorphAnalyzer()`.
 
-```python
-<<<<<<< HEAD
-from rusit import RusitTranslator, RusitValidator, LexiconDB
-=======
-from rusit import RusitTranslator, RusitValidator
->>>>>>> 28ec487 (add some files)
-tr = RusitTranslator()
-tr.translate("Мы будем строить дом.")
-tr.set_register("formal")   # formal | neutral | colloquial — режим фильтрации разговорных маркеров
-tr.imperative_of("читать")  # "читай"
-<<<<<<< HEAD
+## Layout
 
-tr_db = RusitTranslator(db_path="lexicon.db")  # лексикон из SQLite
-with LexiconDB("lexicon.db") as db:
-    db.add("nouns", "космолёт", "космолет")    # добавить особое слово
-    db.remove("nouns", "космолёт")
-=======
->>>>>>> 28ec487 (add some files)
-```
+- `rusit/translator.py` — main implementation: regex tokenization, pymorphy3
+  morphology, lexicon lookups, TAM/aspect/phase/passive rules.
+- `rusit/validator.py` — particle zone order and incompatibilities only
+  (`ZONE_ORDER`, `INCOMPATIBLE`); not a full grammar checker.
+- `rusit/cli.py` — `translate`, `validate`, `explain`, `corpus demo|score`,
+  `lexicon init|export|add|remove|list`; also the `rusit` console script.
+  `translate` supports `-i/--input` and `-o/--output`; file input is translated
+  line by line, preserving blank lines (`-` means stdin/stdout).
+- `rusit/markdown.py` — Markdown-aware translation: block structure and inline
+  markup are masked with placeholders, only plain text is translated. Used by
+  `translate_markdown()` and CLI auto-detection (`.md` suffix, `--format
+  markdown`, `--markdown`).
+- `tests/test_rusit.py` — main suite; `tests/test_cli.py` — file I/O tests;
+  `tests/test_markdown.py` — Markdown preservation tests.
+- `rusit/db.py` — optional SQLite lexicon (`lexicon init` imports JSON;
+  `translate --db file.db` bypasses the JSON lexicon).
+- `rusit/corpus.py` — 5-row demo corpus; `score` reports exact and validator
+  counts (currently `{total: 5, exact: 2, valid: 5}`, so exact ≠ total).
+- `rusit/core.py` and `rusit/rusit_lexicon.json` — legacy RUSIT 3.0 code/data,
+  unused. Root `rusit_lexicon.json` is the live v5.0 lexicon.
+- `RUSIT_5.3.1.md` — normative language specification; not imported by code.
 
-Деплоя нет — это библиотека/CLI-утилита без CI, контейнеров и релизного процесса.
+## Gotchas
 
-## Ключевые особенности реализации (translator.py)
+- `README.md` still calls the project RUSIT 3.0, but the code needs `pymorphy3`
+  and implements RUSIT 5.0 against the 5.3.1 spec.
+- `use_spacy` and the `tr_spacy` test fixture are misleading: the argument is
+  accepted but ignored, and spaCy is never used. Do not add spaCy.
+- CLI `explain` is broken: it calls the nonexistent `RusitValidator.explain`
+  and raises `AttributeError`. `validate` works and exits 1 on invalid input.
+- Мутатив — всегда `ста` (§7.6); `станов` из ранних версий исключён. Perfective
+  мутатива выражается сочетанием `кон ста` (§21.2), imperfective — одним `ста`.
+- Прилагательные сохраняют полную каноническую форму (§5.2): усечения нет.
+- Императив совпадает с канонической лексемой (§8): `чита!`, `вы чита!`, а не
+  `читай`.
+- Lexicon keys are normalized `ё → е` on load; unknown words pass through
+  unchanged by design. There are no grammar exceptions to special-case.
+- API `RusitTranslator.translate()` drops punctuation by default; pass
+  `preserve_punctuation=True` to keep it. CLI and file input always preserve
+  punctuation, attaching it to the preceding token (dashes stay spaced).
 
-- Детерминированный построчный транслятор: токенизация регулярным выражением, разбивка на предложения по `[.!?]`.
-- Канонические глагольные лексемы образуются правилами из §2 спецификации (снятие -ть/-ти/-чь→-г/-сть→-д, эпентезис -ти для одинаковых открытых слогов и совпадений со служебными словами).
-- TAM/аспект: прошедшее → `был`, будущее → `буд`, совершенный вид → `кон`; фазовые операторы (`нач`, `пере`, `прод`) и результативные (`получ`, `перест`) подставляются без маркера времени; мутатив выбирается по контексту (`ста` + прилагательное, `станов` + существительное).
-- Причастия/краткие прилагательные → пассив: `кон` + лексема, агент в творительном падеже → маркер `би`.
-- Родительный падеж существительного → посессив `у` + лексема; притяжательные местоимения → `у я`, `у ты` и т.д.
-- Качественные прилагательные усечаются (большой → больш), относительные сохраняются полностью (деревянный → деревянный).
-- Множественное число существительного → `много` + форма ед. ч.; числительные не требуют `много`.
-- Императив: суффикс только для 2 л. ед. ч. (-й после гласной кроме -и; без изменений на -и; -и после согласной); вежливость через `вы`; 1/3 лицо через `да` + подлежащее.
-- Неизвестные слова проходят в вывод как есть (by design, тест `test_unknown_word_passthrough`).
+## Conventions
 
-## Валидатор (validator.py)
-
-`RusitValidator.validate(text)` возвращает `ValidationResult(ok, errors, warnings)`; поле `error` — первое сообщение (обратная совместимость). Проверяет:
-1. запрещённые пары частиц (таблица `INCOMPATIBLE`, §21 спецификации);
-2. не более одной граничной частицы (`кон/нач/пере/прод/получ/перест`);
-3. `был` и `буд` взаимоисключающие;
-4. порядок зон частиц (`ZONE_ORDER`: не < был/буд < про < сей < граничные < ста/станов < ся);
-5. предлоги без зависимого слова в конце.
-
-## Конвенции и стиль
-
-- Весь код, комментарии, docstring, сообщения об ошибках и тесты пишутся **на русском языке**.
-- Разделы в модулях и тестах отделяются баннерными комментариями `═══`.
-- Тесты организованы классами по темам (SVO, времена, вид, фаза, мутатив, вопросы, пассив, императив, валидатор…), массовые проверки — через `pytest.mark.parametrize`; ожидаемые переводы сверяются пословно точным равенством.
-- Есть тесты производительности (одно предложение < 100 мс, 100 предложений < 10 с).
-- Изменения грамматики должны согласовываться со спецификацией 5.3.1; при расхождении спецификация — источник истины.
-
-## Известные проблемы и ловушки
-
-- `tests/test_rusit.py` (РУСИТ 4.1) устарел: фикстура `tr_spacy` и параметр `use_spacy=True` не поддерживаются текущим `RusitTranslator` — набор падает при сборе. Актуальный набор — `test_rusit.py` в корне.
-- `rusit/core.py` и `rusit/rusit_lexicon.json` — мёртвый код/данные старой версии, не участвуют в работе.
-- `pyproject.toml` не содержит `dependencies` — свежая среда не поднимается одной командой.
-- CLI `explain` вызывает `RusitValidator().explain(text)`, которого в валидаторе нет — подкоманда `explain` падает с AttributeError.
-- Регистрационные тесты вызывают `set_register` без `try/finally` в части мест — при падении теста глобальное состояние регистра протечёт в соседние тесты (в актуальном наборе это учтено через `try/finally`).
-- Безопасности касаться нечего: проект чисто вычислительный, без сети, файловых операций вне переданных путей и секретов.
+- Code, comments, docstrings, error messages, and tests are written in Russian;
+  keep them that way.
+- Modules/tests use banner comments (`═══`), tests are grouped into topic
+  classes, and bulk cases use `pytest.mark.parametrize`. Many assertions compare
+  exact output strings, so behavior changes require deliberate test updates.
+- When grammar changes are involved, consult `RUSIT_5.3.1.md`, but treat the
+  current tests as the executable description of what the implementation does.

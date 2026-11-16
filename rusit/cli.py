@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
 from .corpus import build_demo_corpus, score_file
 from .db import LexiconDB
+from .markdown import looks_like_markdown, translate_markdown
 from .translator import RusitTranslator
 from .validator import RusitValidator
 
@@ -60,6 +63,26 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     tr = sub.add_parser("translate", help="translate Russian text to RUSIT")
     tr.add_argument("text", nargs="*", help="text to translate; stdin is used if omitted")
+    tr.add_argument(
+        "-i", "--input", "--input-file", "--from-file",
+        dest="input", metavar="PATH",
+        help="читать текст из файла ('-' — stdin)",
+    )
+    tr.add_argument(
+        "-o", "--output", "--output-file", "--to-file",
+        dest="output", metavar="PATH",
+        help="записать перевод в файл ('-' — stdout)",
+    )
+    tr.add_argument(
+        "--format", choices=["auto", "text", "markdown"], default="auto",
+        help="формат документа: auto (по расширению/содержимому), "
+             "text или markdown",
+    )
+    tr.add_argument(
+        "--markdown", dest="format", action="store_const",
+        const="markdown", default=argparse.SUPPRESS,
+        help="то же, что --format markdown",
+    )
     tr.add_argument("--db", help="путь к SQLite-базе лексикона")
     val = sub.add_parser("validate", help="validate RUSIT text")
     val.add_argument("text", nargs="*", help="text to validate; stdin is used if omitted")
@@ -75,16 +98,82 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     text = " ".join(getattr(args, "text", []) or []).strip()
-    if hasattr(args, "text") and not text:
-        import sys
-        text = sys.stdin.read().strip()
 
     if args.cmd == "translate":
+        from_file = False
+        if args.input:
+            if text:
+                print(
+                    "translate: нельзя одновременно указать текст и --input",
+                    file=sys.stderr,
+                )
+                return 2
+            if args.input == "-":
+                text = sys.stdin.read()
+            else:
+                try:
+                    text = Path(args.input).read_text(encoding="utf-8")
+                except OSError as exc:
+                    print(
+                        f"translate: не удалось прочитать {args.input}: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 2
+            from_file = True
+        elif not text:
+            text = sys.stdin.read().strip()
+
         translator = (
             RusitTranslator(db_path=args.db) if args.db
             else RusitTranslator()
         )
-        print(translator.translate(text)); return 0
+        markdown_suffixes = {
+            ".md", ".markdown", ".mdown", ".mkd", ".mdx",
+        }
+        markdown_file = bool(
+            args.input
+            and args.input != "-"
+            and Path(args.input).suffix.lower() in markdown_suffixes
+        )
+        markdown = args.format == "markdown" or (
+            args.format == "auto"
+            and (markdown_file or looks_like_markdown(text))
+        )
+
+        if markdown:
+            translated = translator.translate_markdown(text)
+        elif from_file:
+            translated = "\n".join(
+                translator.translate(
+                    line, preserve_punctuation=True
+                )
+                for line in text.splitlines()
+            )
+        else:
+            translated = translator.translate(
+                text, preserve_punctuation=True
+            )
+
+        if args.output and args.output != "-":
+            output = translated
+            if output and not output.endswith("\n"):
+                output += "\n"
+            try:
+                Path(args.output).write_text(output, encoding="utf-8")
+            except OSError as exc:
+                print(
+                    f"translate: не удалось записать {args.output}: {exc}",
+                    file=sys.stderr,
+                )
+                return 2
+        else:
+            if translated and not translated.endswith("\n"):
+                translated += "\n"
+            sys.stdout.write(translated)
+        return 0
+
+    if hasattr(args, "text") and not text:
+        text = sys.stdin.read()
     if args.cmd == "validate":
         result = RusitValidator().validate(text)
         print(json.dumps(result.__dict__, ensure_ascii=False, indent=2))
