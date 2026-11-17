@@ -226,6 +226,7 @@ class RusitTranslator:
 
         pending_preposition: Optional[str] = None
         pending_possession: Optional[list[str]] = None
+        pending_comparison = False
         consumed: set[int] = set()
 
         for index, token in enumerate(tokens):
@@ -299,6 +300,34 @@ class RusitTranslator:
             }:
                 output.append(self._particle("future", "буд"))
                 continue
+
+            # ── Сравнительная степень (§5.4) ──
+            # «он выше меня» → «он более высокий чем я».
+            # Суффикс сравнительной степени заменяется словом «более»,
+            # полная форма прилагательного сохраняется (§5.2),
+            # стандарт сравнения вводится союзом «чем».
+            if self._comparison_context(tokens, index):
+                positive = self._comparative_positive(token)
+                if positive is not None:
+                    if pending_preposition:
+                        output.append(pending_preposition)
+                        pending_preposition = None
+                    output.append("более")
+                    output.append(positive)
+                    # Стандарт сравнения вводим союзом «чем»,
+                    # если он есть и не дан явно.
+                    next_tok = self._next_meaningful_token(
+                        tokens, index
+                    )
+                    if next_tok != "чем" and (
+                        next_tok in self.pronouns
+                        or (
+                            next_tok is not None
+                            and self._is_genitive_noun(next_tok)
+                        )
+                    ):
+                        pending_comparison = True
+                    continue
 
             # ── Притяжательные прилагательные ──
             # «мамин» → посессивная конструкция «у мама» после
@@ -452,6 +481,13 @@ class RusitTranslator:
                 and not self._quantifier_before(tokens, index)
                 and not self._accusative_context(tokens, index)
             ):
+                if pending_comparison:
+                    # Стандарт сравнения: «чем» + именительная база,
+                    # без маркера «у» («выше брата» → «чем брат»).
+                    output.append("чем")
+                    output.append(self._get_singular_base(token))
+                    pending_comparison = False
+                    continue
                 if pending_preposition:
                     # Предлог заменяет падеж полностью (§13):
                     # «от группы» → «от группа», без маркера «у».
@@ -464,6 +500,9 @@ class RusitTranslator:
 
             # ── Имя / местоимение ──
             value = self._nominal_output(token, force_plural=plural_ctx)
+            if pending_comparison:
+                output.append("чем")
+                pending_comparison = False
             if pending_preposition:
                 output.append(pending_preposition)
                 pending_preposition = None
@@ -904,14 +943,22 @@ class RusitTranslator:
                 prev = tok
         if prev is None:
             return False
-        # Само количественное слово или притяжательное местоимение
-        # тоже может иметь множественный разбор («многие», «его»):
-        # оно не создаёт plural_ctx — число несёт само существительное.
-        if prev in _POSSESSIVES or prev in {
+        # Само количественное слово тоже может иметь множественный
+        # разбор («многие» = ADJF plur) — оно не создаёт plural_ctx.
+        if prev in {
             "много", "многие", "многих", "многим",
             "несколько", "нескольких", "множество",
         }:
             return False
+        # «его книга» / «его книги»: неопределённая форма 3-го лица
+        # сама по себе не делает следующее имя множественным.
+        # Но слабо различаемые формы («книги») всё же должны получить
+        # маркер «много», поэтому смотрим разбор самого имени.
+        if prev in _AMBIGUOUS_POSSESSIVES and index < len(tokens):
+            return any(
+                p.tag.POS == "NOUN" and p.tag.number == "plur"
+                for p in self.morph.parse(tokens[index])
+            )
         for p in self.morph.parse(prev):
             if (
                 p.tag.POS in {"ADJF", "PRTF", "PRTS"}
@@ -1182,6 +1229,48 @@ class RusitTranslator:
         if any(prep in before for prep in ("в", "на")):
             return True
         return False
+
+    # ═══════════════════════════════════════════
+    # СРАВНИТЕЛЬНАЯ СТЕПЕНЬ (§5.4)
+    # ═══════════════════════════════════════════
+
+    def _comparison_context(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """Контекст сравнения: COMP-форма с именным подлежащим слева.
+        «Больше людей пришло» — количественное слово: подлежащего
+        слева нет. «Беги быстрее» — наречие: слева глагол,
+        а не имя. Стандарт сравнения («меня», «брата») необязателен:
+        «это хуже» → «этот более плохой»."""
+        prev = None
+        for tok in tokens[:index]:
+            if not self._is_punctuation(tok):
+                prev = tok
+        if prev is None:
+            return False
+        if not self._is_nominal(prev) and prev not in self.pronouns:
+            return False
+        return True
+
+    def _comparative_positive(self, token: str) -> Optional[str]:
+        """COMP-форма → полная каноническая форма прилагательного.
+
+        Лемма COMP у pymorphy обычно уже прилагательное
+        («больше» → «большой»); у слов типа «выше» лемма —
+        наречие «высоко», и полная форма выводится заменой
+        конечного «-о» на «-ий»/«-ой». Если полной формы в
+        лексиконе нет, слово не трогаем."""
+        for p in self.morph.parse(token):
+            if p.tag.POS != "COMP":
+                continue
+            lemma = p.normal_form.replace("ё", "е")
+            if lemma in self.qualifiers:
+                return self.qualifiers[lemma]
+            for candidate in (lemma[:-1] + "ий", lemma[:-1] + "ой"):
+                if candidate in self.qualifiers:
+                    return self.qualifiers[candidate]
+            return None
+        return None
 
     # ═══════════════════════════════════════════
     # Родительный → у

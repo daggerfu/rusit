@@ -512,6 +512,35 @@ class TestAdjectives:
         assert "самый" in result
         assert "большой" in result
 
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("Он выше меня.", "он более высокий чем я"),
+            ("Она лучше тебя.", "она более хороший чем ты"),
+            ("Он выше брата.", "он более высокий чем брат"),
+        ],
+    )
+    def test_comparative_suffix(self, tr, text, expected):
+        # Сравнительный суффикс → «более», стандарт — «чем» (§5.4).
+        assert tr.translate(text) == expected
+
+    def test_comparative_predicative_no_standard(self, tr):
+        # Предикативное сравнение без стандарта (§5.4).
+        assert tr.translate("Это хуже.") == "этот более плохой"
+
+    def test_comparative_explicit_chem(self, tr):
+        # Явный союз «чем» не дублируется.
+        assert tr.translate("Я выше, чем ты.") == "я более высокий чем ты"
+
+    def test_comparative_not_quantifier(self, tr):
+        # «больше» при количественном значении — не сравнение.
+        result = tr.translate("Больше людей пришло.")
+        assert "более" not in result
+
+    def test_comparative_adverb_untouched(self, tr):
+        # Наречная сравнительная степень без стандарта — как есть.
+        assert tr.translate("Беги быстрее.") == "бежа быстрее"
+
 
 # ═══════════════════════════════════════════════
 # 12. МНОЖЕСТВЕННОЕ ЧИСЛО
