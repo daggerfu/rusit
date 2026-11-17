@@ -473,7 +473,9 @@ class RusitTranslator:
             # «многие города» → «много город», а не «у город».
             # Омонимия «стороны» (род.ед. / им.мн.) снимается
             # согласованием: «заинтересованные стороны» — множественное.
-            plural_ctx = self._plural_modifier_before(tokens, index)
+            plural_ctx = self._plural_modifier_before(
+                tokens, index
+            ) or self._verb_accusative_plural(tokens, index, token)
             if (
                 self._is_genitive_noun(token)
                 and not self._is_plural_form(token)
@@ -496,6 +498,20 @@ class RusitTranslator:
                 else:
                     output.append("у")
                 output.append(self._nominal_fallback(token))
+                continue
+
+            # ── Творительный падеж → с (§4.2, §919) ──
+            # «я пишу ручкой» → «я писа с ручка». Предлог заменяет
+            # падеж полностью (§13): «с ручкой» → «с ручка»,
+            # без дублирования маркера «с».
+            if self._is_instrumental(token) and not pending_preposition:
+                output.append("с")
+                output.extend(
+                    self._nominal_output(token, force_plural=plural_ctx)
+                )
+                if pending_possession:
+                    output.extend(pending_possession)
+                    pending_possession = None
                 continue
 
             # ── Имя / местоимение ──
@@ -1283,6 +1299,31 @@ class RusitTranslator:
                     return True
         return False
 
+    def _verb_accusative_plural(
+        self, tokens: list, index: int, token: str
+    ) -> bool:
+        """Формы типа «заявления» (род. ед. = вин. мн.): после глагола
+        читаются как винительный множественный
+        («принимаем заявления» → «принима много заявление»),
+        а не как родительный («у заявление»)."""
+        if not any(
+            p.tag.POS == "NOUN"
+            and "accs" in str(p.tag)
+            and p.tag.number == "plur"
+            for p in self.morph.parse(token)
+        ):
+            return False
+        prev = None
+        for tok in tokens[:index]:
+            if not self._is_punctuation(tok):
+                prev = tok
+        if prev is None:
+            return False
+        return any(
+            p.tag.POS in {"VERB", "INFN"}
+            for p in self.morph.parse(prev)
+        )
+
     # ═══════════════════════════════════════════
     # PASSIVE
     # ═══════════════════════════════════════════
@@ -1309,6 +1350,7 @@ class RusitTranslator:
                     "NOUN", "ADJF", "PRTF", "NPRO",
                 }
                 and "ablt" in str(parse.tag)
+                and parse.score > 0.5
             ):
                 return True
         return False
