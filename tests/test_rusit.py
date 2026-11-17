@@ -466,6 +466,16 @@ class TestAdjectives:
         result = tr.translate("Красивый дом.")
         assert "красивый" in result
 
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("Красно стекло.", "красно стекло"),
+            ("делать красиво", "дела красиво"),
+        ],
+    )
+    def test_krasivyy_not_misread_as_verb(self, tr, text, expected):
+        assert tr.translate(text) == expected
+
     def test_qualitative_novyy(self, tr):
         result = tr.translate("Новая книга.")
         assert "новый" in result
@@ -635,6 +645,17 @@ class TestImperative:
         result = tr.translate("Пусть он идёт!")
         assert "да" in result
         assert "иди" in result
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("день", "день"),
+            ("Добрый день", "добрый день"),
+            ("Добрый день!", "добрый день!"),
+        ],
+    )
+    def test_noun_not_misread_as_imperative(self, tr, text, expected):
+        assert tr.translate(text) == expected
 
 
 # ═══════════════════════════════════════════════

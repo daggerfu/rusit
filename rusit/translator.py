@@ -61,6 +61,10 @@ _POSSESSIVES: Dict[str, str] = {
     "свой": "у себя", "своя": "у себя", "свое": "у себя", "свои": "у себя",
 }
 
+# Формы 3-го лица совпадают с притяжательными: «вижу его» — это
+# местоимение, а «его книга» — притяжание (§4.1–4.2).
+_AMBIGUOUS_POSSESSIVES = {"его", "ее", "их"}
+
 
 class RusitTranslator:
 
@@ -382,11 +386,19 @@ class RusitTranslator:
                 continue
 
             # ── Притяжательные местоимения ──
+            # «его/ее/их» перед именем — притяжание, иначе личное
+            # местоимение: «вижу его» → «види он» (§4.1–4.2).
             if token in _POSSESSIVES:
+                if (
+                    token in _AMBIGUOUS_POSSESSIVES
+                    and not self._is_possessive_position(tokens, index)
+                ):
+                    output.extend(self._nominal_output(token))
+                    continue
                 if pending_preposition:
                     output.append(pending_preposition)
                     pending_preposition = None
-                output.extend(_POSSESSIVES[token].split())
+                pending_possession = _POSSESSIVES[token].split()
                 continue
 
             # ── Наречия закрытого списка → сохраняются как есть ──
@@ -620,6 +632,19 @@ class RusitTranslator:
             if rivals:
                 return None
 
+            # «день» — существительное, а не императив редкого «деть»:
+            # именной разбор с заметно большей массой перевешивает
+            # случайный императивный разбор неизвестного глагола.
+            nominal_rivals = [
+                p
+                for p in parses
+                if "impr" not in str(p.tag)
+                and p.tag.POS in {"NOUN", "ADJF", "ADJS", "PRON", "NPRO"}
+                and p.score > parse.score
+            ]
+            if nominal_rivals:
+                return None
+
         lemma = parse.normal_form
         reflexive = lemma.endswith(("ся", "сь"))
         lexeme = self._imperative_from_lexeme(
@@ -772,11 +797,10 @@ class RusitTranslator:
             if p.tag.POS == "INFN":
                 return p.normal_form
 
-        for verb_lemma, verb_lexeme in self.verbs.items():
-            if len(verb_lexeme) >= 3:
-                if participle_lemma.startswith(verb_lexeme[:3]):
-                    return verb_lemma
-
+        # Раньше здесь было совпадение первых трёх букв с лексемой
+        # глагола: «красивый» превращалось в «красть» → «крад».
+        # Надёжные источники — инфинитив из разбора и суффикс
+        # причастия; короткий префикс даёт слишком много ложных пар.
         for suffix in ("нный", "енный", "тый", "атый", "ялый"):
             if participle_lemma.endswith(suffix):
                 stem = participle_lemma[: -len(suffix)]
@@ -804,6 +828,28 @@ class RusitTranslator:
             if not self._is_punctuation(tok):
                 return tok
         return None
+
+    def _is_possessive_position(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """«его/ее/их» перед именем — притяжание (§4.2).
+
+        В остальных позициях это личные местоимения:
+        «вижу его» → «види он», а не «види у он».
+        """
+        next_tok = self._next_meaningful_token(tokens, index)
+        if next_tok is None or next_tok in self.conjunctions:
+            return False
+        if (
+            next_tok in self.nouns
+            or next_tok in self.qualifiers
+            or next_tok in self.relative_adjectives
+        ):
+            return True
+        return any(
+            p.tag.POS in {"NOUN", "ADJF", "PRTF"}
+            for p in self.morph.parse(next_tok)
+        )
 
     def _possessive_owner(self, token: str) -> Optional[str]:
         """Притяжательное прилагательное («мамин») → владелец.
@@ -858,9 +904,10 @@ class RusitTranslator:
                 prev = tok
         if prev is None:
             return False
-        # Само количественное слово тоже может иметь множественный
-        # разбор («многие» = ADJF plur) — оно не создаёт plural_ctx.
-        if prev in {
+        # Само количественное слово или притяжательное местоимение
+        # тоже может иметь множественный разбор («многие», «его»):
+        # оно не создаёт plural_ctx — число несёт само существительное.
+        if prev in _POSSESSIVES or prev in {
             "много", "многие", "многих", "многим",
             "несколько", "нескольких", "множество",
         }:
