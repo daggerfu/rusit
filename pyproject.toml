@@ -5,8 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rusit"
 version = "0.1.0"
-description = "Utilities for the RUSIT 3.0 analytic Russian-based language"
+description = "Utilities for the RUSIT 5.3.1 analytic Russian-based language"
 requires-python = ">=3.10"
+dependencies = [
+  "pymorphy3>=1.0",
+  "spacy>=3.7",
+]
 
 [project.scripts]
 rusit = "rusit.cli:main"

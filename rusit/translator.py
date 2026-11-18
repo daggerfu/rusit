@@ -1,6 +1,5 @@
 """
-РУСИТ 5.0 — линейный аналитический транслятор.
-Ревизия 4. Все провалы закрыты.
+РУСИТ 5.3.1 — линейный аналитический транслятор.
 """
 
 from __future__ import annotations
@@ -8,71 +7,32 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Dict, Set, List, Optional
+from typing import Dict, Optional, Set
 
 import pymorphy3
 
-
-_TOKEN_RE = re.compile(
-    r"[А-Яа-яЁё]+|[A-Za-z]+|\d+|[!?.,;:—-]"
+from .tokenizer import tokenize
+from .translator_constants import (
+    _AMBIGUOUS_POSSESSIVES,
+    _DATIVE_PRONOUNS,
+    _POSSESSIVES,
+    _PRONOUN_FALLBACKS,
+    _STANDALONE_POSSESSIVE_LEMMAS,
 )
+from .translator_nominals import NominalsMixin
+from .translator_spacy import SpacyMixin
+from .translator_syntax import SyntaxMixin
+from .translator_verbs import VerbsMixin
 
 
-def tokenize(text: str) -> list[str]:
-    raw = _TOKEN_RE.findall(
-        text.lower().replace("ё", "е")
-    )
-    # Слияние дефисных композитов: «бизнес-процессы» — один токен.
-    merged: list[str] = []
-    i = 0
-    while i < len(raw):
-        if (
-            i + 2 < len(raw)
-            and raw[i + 1] == "-"
-            and re.fullmatch(r"[а-яa-z]+", raw[i])
-            and re.fullmatch(r"[а-яa-z]+", raw[i + 2])
-        ):
-            merged.append(raw[i] + "-" + raw[i + 2])
-            i += 3
-        else:
-            merged.append(raw[i])
-            i += 1
-    return merged
-
-
-_PRONOUN_FALLBACKS: Dict[str, str] = {
-    "ней": "она",
-    "ним": "он",
-    "ними": "они",
-    "нем": "он",
-    "нём": "он",
-    "обо": "о",
-}
-
-# Дательные формы местоимений → адресат «к» (§13.4)
-_DATIVE_PRONOUNS = {"мне", "тебе", "ему", "ей", "нам", "вам", "им"}
-
-_POSSESSIVES: Dict[str, str] = {
-    "мой": "у я", "моя": "у я", "мое": "у я", "мои": "у я",
-    "твой": "у ты", "твоя": "у ты", "твое": "у ты", "твои": "у ты",
-    "наш": "у мы", "наша": "у мы", "наше": "у мы", "наши": "у мы",
-    "ваш": "у вы", "ваша": "у вы", "ваше": "у вы", "ваши": "у вы",
-    "его": "у он", "ее": "у она", "их": "у они",
-    "свой": "у себя", "своя": "у себя", "свое": "у себя", "свои": "у себя",
-}
-
-# Формы 3-го лица совпадают с притяжательными: «вижу его» — это
-# местоимение, а «его книга» — притяжание (§4.1–4.2).
-_AMBIGUOUS_POSSESSIVES = {"его", "ее", "их"}
-
-
-class RusitTranslator:
+class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
 
     def __init__(
         self,
-        use_spacy: bool = True,
         lexicon_path: str | Path = "rusit_lexicon.json",
         db_path: str | Path | None = None,
+        use_spacy: bool = False,
+        spacy_model: str = "ru_core_news_sm",
     ):
         if db_path is not None:
             from .db import load_lexicon
@@ -100,6 +60,7 @@ class RusitTranslator:
         self.relative_pronouns: Dict[str, str] = self.lexicon.get(
             "relative_pronouns", {}
         )
+        self.adverbs: Dict[str, str] = self.lexicon.get("adverbs", {})
         self.adverbs_blacklist: Set[str] = set(
             self.lexicon.get("adverbs_blacklist", [])
         )
@@ -129,9 +90,33 @@ class RusitTranslator:
             k.lower().replace("ё", "е"): v
             for k, v in self.aspect_verbs.items()
         }
+        self.adverbs = {
+            k.lower().replace("ё", "е"): v for k, v in self.adverbs.items()
+        }
 
         self.morph = pymorphy3.MorphAnalyzer()
         self.register = "neutral"
+        self.use_spacy = use_spacy
+        self.spacy_model = spacy_model
+        self.nlp = None
+        self._spacy_doc = None
+        self._spacy_token_map: dict[int, object] = {}
+        if use_spacy:
+            try:
+                import spacy
+            except ImportError as exc:
+                raise RuntimeError(
+                    "spaCy не установлен. Установите пакет spacy и "
+                    "русскую модель (например, ru_core_news_sm)."
+                ) from exc
+            try:
+                self.nlp = spacy.load(spacy_model)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Не удалось загрузить spaCy-модель '{spacy_model}'. "
+                    "Установите модель, например: "
+                    "python3 -m spacy download ru_core_news_sm"
+                ) from exc
 
         self.wh_words = {
             "кто", "что", "какой", "какая", "какое", "какие",
@@ -142,6 +127,7 @@ class RusitTranslator:
     # PARTICLE HELPER
     # ═══════════════════════════════════════════
 
+
     def _particle(self, key: str, default: str) -> str:
         return self.particles.get(key, default)
 
@@ -149,12 +135,14 @@ class RusitTranslator:
     # PUBLIC API
     # ═══════════════════════════════════════════
 
+
     def set_register(self, register: str) -> None:
         if register not in {"formal", "neutral", "colloquial"}:
             raise ValueError(
                 "register must be formal, neutral or colloquial"
             )
         self.register = register
+
 
     def translate(
         self, text: str, preserve_punctuation: bool = False
@@ -172,11 +160,13 @@ class RusitTranslator:
                     results.append(r)
         return " ".join(results)
 
+
     def translate_markdown(self, text: str) -> str:
         """Перевести Markdown, сохранив разметку и структуру."""
         from .markdown import translate_markdown
 
         return translate_markdown(text, self)
+
 
     def imperative_of(self, infinitive: str) -> str:
         """Инфинитив → императив РУСИТ."""
@@ -187,10 +177,12 @@ class RusitTranslator:
     # SENTENCE
     # ═══════════════════════════════════════════
 
+
     def _split_sentences(self, text: str) -> list[str]:
         return [
             x for x in re.split(r"(?<=[.!?])\s+", text.strip()) if x
         ]
+
 
     def _translate_sentence(
         self, sentence: str, preserve_punctuation: bool = False
@@ -198,6 +190,13 @@ class RusitTranslator:
         tokens = tokenize(sentence)
         if not tokens:
             return ""
+        self._spacy_doc = None
+        self._spacy_token_map = {}
+        if self.nlp is not None:
+            self._spacy_doc = self.nlp(sentence)
+            self._spacy_token_map = self._build_spacy_token_map(
+                tokens, self._spacy_doc
+            )
 
         tokens = self._normalize_imperative_constructions(tokens)
 
@@ -225,8 +224,13 @@ class RusitTranslator:
             output.append(self._particle("question", "ли"))
 
         pending_preposition: Optional[str] = None
+        preposition_applied = False
         pending_possession: Optional[list[str]] = None
         pending_comparison = False
+        deferred_objects: list[list[str]] = []
+        verb_emitted = False
+        emitted_tam: set[str] = set()
+        suppress_plural_marker = False
         consumed: set[int] = set()
 
         for index, token in enumerate(tokens):
@@ -293,12 +297,14 @@ class RusitTranslator:
                     output.append(self._particle("past", "был"))
                 else:
                     output.append(self._particle("past", "был"))
+                emitted_tam.add("был")
                 continue
             if token in {
                 "буду", "будешь", "будет",
                 "будем", "будете", "будут",
             }:
                 output.append(self._particle("future", "буд"))
+                emitted_tam.add("буд")
                 continue
 
             # ── Сравнительная степень (§5.4) ──
@@ -344,6 +350,8 @@ class RusitTranslator:
                     output.append(pending_preposition)
                     pending_preposition = None
                 output.append(determiner)
+                if determiner in {"эти", "те", "некоторые", "все"}:
+                    suppress_plural_marker = True
                 continue
 
             # ── Числительные ──
@@ -353,10 +361,20 @@ class RusitTranslator:
                 # («много городов» → «много город»,
                 #  «множество действий» → «много действие»).
                 if token in {"много", "множество"}:
-                    next_tok = self._next_meaningful_token(tokens, index)
-                    if next_tok and self._is_plural_form(next_tok):
-                        continue
-                output.append(self._numeral_base(token))
+                    if pending_preposition:
+                        output.append(pending_preposition)
+                        pending_preposition = None
+                    output.append("много")
+                    suppress_plural_marker = True
+                    continue
+                numeral = self._numeral_base(token)
+                if pending_preposition:
+                    output.append(pending_preposition)
+                    pending_preposition = None
+                output.append(numeral)
+                # Числительное/количественное слово выражает количество NP,
+                # дополнительный маркер «много» не нужен.
+                suppress_plural_marker = True
                 continue
 
             # ── Возвратная частица ──
@@ -415,19 +433,48 @@ class RusitTranslator:
                 continue
 
             # ── Притяжательные местоимения ──
+            # «мой/твой/наш/ваш/свой» — самостоятельные лексемы.
             # «его/ее/их» перед именем — притяжание, иначе личное
             # местоимение: «вижу его» → «види он» (§4.1–4.2).
-            if token in _POSSESSIVES:
+            standalone_poss = self._standalone_possessive(
+                token, tokens, index
+            )
+            if standalone_poss is not None:
+                if pending_preposition:
+                    output.append(pending_preposition)
+                    pending_preposition = None
+                    preposition_applied = True
+                output.append(standalone_poss)
+                continue
+            if self._is_my_verb_form(token, tokens, index):
+                pass  # императив/глагол «мыть» обработается ниже
+            elif token in _POSSESSIVES:
                 if (
                     token in _AMBIGUOUS_POSSESSIVES
                     and not self._is_possessive_position(tokens, index)
                 ):
-                    output.extend(self._nominal_output(token))
+                    value = self._nominal_output(token)
+                    if self._should_defer_direct_object(
+                        token, tokens, index, verb_emitted,
+                        pending_preposition, preposition_applied,
+                    ):
+                        deferred_objects.append(value)
+                    else:
+                        output.extend(value)
                     continue
                 if pending_preposition:
                     output.append(pending_preposition)
                     pending_preposition = None
                 pending_possession = _POSSESSIVES[token].split()
+                continue
+
+            # ── Неизменяемые наречные лексемы (словарь) ──
+            # Отдельные наречия из лексикона: без суффиксов,
+            # согласований и изменений; выводятся канонической
+            # формой как есть, значение — семантическая метка
+            # (частота, степень, скорость, ...).
+            if token in self.adverbs:
+                output.append(token)
                 continue
 
             # ── Наречия закрытого списка → сохраняются как есть ──
@@ -439,13 +486,19 @@ class RusitTranslator:
             imperative = self._process_imperative(token)
             if imperative is not None:
                 output.extend(imperative)
+                verb_emitted = True
+                if deferred_objects:
+                    for obj in deferred_objects:
+                        output.extend(obj)
+                    deferred_objects.clear()
                 continue
 
             # ── Глагол / предикатор ──
             verb_result = self._process_verb(token, tokens, index)
             if verb_result is not None:
                 result, passive = verb_result
-                output.extend(result)
+                output.extend(self._dedupe_tam(result, emitted_tam))
+                verb_emitted = True
 
                 if pending_preposition:
                     output.append(pending_preposition)
@@ -465,6 +518,10 @@ class RusitTranslator:
                             )
                         )
                         consumed.add(agent_index)
+                elif deferred_objects:
+                    for obj in deferred_objects:
+                        output.extend(obj)
+                    deferred_objects.clear()
                 continue
 
             # ── Родительный падеж → у ──
@@ -489,12 +546,15 @@ class RusitTranslator:
                     output.append("чем")
                     output.append(self._get_singular_base(token))
                     pending_comparison = False
+                    preposition_applied = False
                     continue
                 if pending_preposition:
                     # Предлог заменяет падеж полностью (§13):
                     # «от группы» → «от группа», без маркера «у».
                     output.append(pending_preposition)
                     pending_preposition = None
+                elif preposition_applied:
+                    preposition_applied = False
                 else:
                     output.append("у")
                 output.append(self._nominal_fallback(token))
@@ -504,32 +564,82 @@ class RusitTranslator:
             # «я пишу ручкой» → «я писа с ручка». Предлог заменяет
             # падеж полностью (§13): «с ручкой» → «с ручка»,
             # без дублирования маркера «с».
-            if self._is_instrumental(token) and not pending_preposition:
+            if (
+                self._is_instrumental(token)
+                and not pending_preposition
+                and not preposition_applied
+            ):
                 output.append("с")
-                output.extend(
-                    self._nominal_output(token, force_plural=plural_ctx)
+                use_suppress = suppress_plural_marker
+                value = self._nominal_output(
+                    token,
+                    suppress_plural_marker=use_suppress,
                 )
+                output.extend(value)
+                if use_suppress and (plural_ctx or self._is_plural_form(token)) and any(
+                    p.tag.POS == "NOUN" and p.score > 0.3
+                    for p in self.morph.parse(token)
+                ):
+                    suppress_plural_marker = False
                 if pending_possession:
                     output.extend(pending_possession)
                     pending_possession = None
                 continue
 
             # ── Имя / местоимение ──
-            value = self._nominal_output(token, force_plural=plural_ctx)
+            use_suppress = suppress_plural_marker
+            value = self._nominal_output(
+                token,
+                suppress_plural_marker=use_suppress,
+            )
             if pending_comparison:
                 output.append("чем")
                 pending_comparison = False
-            if pending_preposition:
-                output.append(pending_preposition)
-                pending_preposition = None
-            output.extend(value)
-            if pending_possession:
-                output.extend(pending_possession)
-                pending_possession = None
+
+            defer_object = self._should_defer_direct_object(
+                token, tokens, index, verb_emitted,
+                pending_preposition, preposition_applied,
+            )
+            if defer_object:
+                obj_tokens = list(value)
+                if pending_possession:
+                    obj_tokens.extend(pending_possession)
+                    pending_possession = None
+                deferred_objects.append(obj_tokens)
+                if preposition_applied:
+                    preposition_applied = False
+            else:
+                if pending_preposition:
+                    output.append(pending_preposition)
+                    pending_preposition = None
+                elif preposition_applied:
+                    preposition_applied = False
+                output.extend(value)
+                if use_suppress and (plural_ctx or self._is_plural_form(token)) and any(
+                    p.tag.POS == "NOUN" and p.score > 0.3
+                    for p in self.morph.parse(token)
+                ):
+                    suppress_plural_marker = False
+                if pending_possession:
+                    output.extend(pending_possession)
+                    pending_possession = None
+
+            if defer_object and use_suppress and (
+                plural_ctx or self._is_plural_form(token)
+            ) and any(
+                p.tag.POS == "NOUN" and p.score > 0.3
+                for p in self.morph.parse(token)
+            ):
+                suppress_plural_marker = False
 
         if pending_possession:
             # Посессив без существительного — выводим как есть.
             output.extend(pending_possession)
+        if deferred_objects:
+            for obj in deferred_objects:
+                output.extend(obj)
+
+        output = self._reorder_np_plural_marker(output)
 
         result = " ".join(output).strip()
         if result and not preserve_punctuation:
@@ -540,881 +650,9 @@ class RusitTranslator:
         return result
 
     # ═══════════════════════════════════════════
-    # ПРИЧАСТНЫЕ ОБОРОТЫ → «который» + КЛАУЗА (§15.3)
+    # NP-LEVEL PLURAL MARKER
     # ═══════════════════════════════════════════
 
-    def _restructure_participles(self, tokens: list[str]) -> list[str]:
-        """Причастий в РУСИТ нет: определительное причастие
-        перестраивается в относительную клаузу.
-
-        Постпозитив (требует запятой): «дом, построенный …»
-        → «дом, который кон строи …».
-        Препозитив (согласование по роду и числу):
-        «созданные ранее артефакты»
-        → «артефакт который кон созда ранее».
-        Предикативный пассив без запятой не трогаем (§14).
-        """
-        result = list(tokens)
-        i = 0
-        while i < len(result):
-            token = result[i]
-            if not self._is_attributive_participle(token):
-                i += 1
-                continue
-
-            # Постпозитив: NOUN "," PART
-            if (
-                i >= 2
-                and result[i - 1] == ","
-                and self._is_noun_token(result[i - 2])
-            ):
-                head = result[i - 2]
-                result[i - 2 : i + 1] = [head, ",", "который", token]
-                i += 3
-                continue
-
-            # Препозитив: PART (ADVB)* NOUN с согласованием
-            j = i + 1
-            while j < len(result) and self._is_adverb_token(result[j]):
-                j += 1
-            if (
-                j < len(result)
-                and self._is_noun_token(result[j])
-                and not self._is_animate_instrumental(result[j])
-                and self._agrees_in_gn(token, result[j])
-            ):
-                noun = result[j]
-                del result[j]
-                result[i:i] = [noun, "который"]
-                i += 3
-                continue
-
-            i += 1
-        return result
-
-    def _is_attributive_participle(self, token: str) -> bool:
-        for p in self.morph.parse(token):
-            if p.tag.POS not in {"PRTF", "PRTS"}:
-                continue
-            if self._participle_to_verb(p.normal_form) in self.verbs:
-                return True
-        return False
-
-    def _is_noun_token(self, token: str) -> bool:
-        return any(
-            p.tag.POS == "NOUN"
-            for p in self.morph.parse(token)
-        )
-
-    def _is_adverb_token(self, token: str) -> bool:
-        return any(
-            p.tag.POS == "ADVB"
-            for p in self.morph.parse(token)
-        )
-
-    def _agrees_in_gn(self, participle: str, noun: str) -> bool:
-        """Согласование причастия с существительным: число обязательно,
-        род — когда у причастия он выражен (во мн.ч. pymorphy
-        род причастия пустой, а существительное сохраняет)."""
-        p_gn = [
-            (p.tag.gender, p.tag.number)
-            for p in self.morph.parse(participle)
-            if p.tag.POS in {"PRTF", "PRTS"}
-        ]
-        for p in self.morph.parse(noun):
-            if p.tag.POS != "NOUN":
-                continue
-            for gender, number in p_gn:
-                if p.tag.number != number:
-                    continue
-                if gender is None or gender == p.tag.gender:
-                    return True
-        return False
-
-    # ═══════════════════════════════════════════
-    # пусть / давайте
-    # ═══════════════════════════════════════════
-
-    def _normalize_imperative_constructions(
-        self, tokens: list[str]
-    ) -> list[str]:
-        result: list[str] = []
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
-            if token == "пусть":
-                result.append(self._particle("imperative", "да"))
-                i += 1
-                continue
-            if token == "давайте":
-                result.append(self._particle("imperative", "да"))
-                result.append("мы")
-                i += 1
-                continue
-            result.append(token)
-            i += 1
-        return result
-
-    # ═══════════════════════════════════════════
-    # ИМПЕРАТИВ
-    # ═══════════════════════════════════════════
-
-    def _process_imperative(
-        self, token: str
-    ) -> Optional[List[str]]:
-        parses = self.morph.parse(token)
-
-        impr_parses = [
-            p for p in parses if "impr" in str(p.tag)
-        ]
-        if not impr_parses:
-            return None
-
-        parse = max(impr_parses, key=lambda p: p.score)
-
-        # Омонимия «попали» = прош.вр. «попасть» / имп. «попалить»:
-        # если императивный разбор — неизвестный глагол, а рядом
-        # разбор с известной леммой не хуже по score, императиву
-        # не бывать — слово пойдёт по обычной глагольной ветке.
-        if parse.normal_form not in self.verbs:
-            rivals = [
-                p
-                for p in parses
-                if p.tag.POS in {"VERB", "INFN"}
-                and p.normal_form in self.verbs
-                and p.score >= parse.score
-            ]
-            if rivals:
-                return None
-
-            # «день» — существительное, а не императив редкого «деть»:
-            # именной разбор с заметно большей массой перевешивает
-            # случайный императивный разбор неизвестного глагола.
-            nominal_rivals = [
-                p
-                for p in parses
-                if "impr" not in str(p.tag)
-                and p.tag.POS in {"NOUN", "ADJF", "ADJS", "PRON", "NPRO"}
-                and p.score > parse.score
-            ]
-            if nominal_rivals:
-                return None
-
-        lemma = parse.normal_form
-        reflexive = lemma.endswith(("ся", "сь"))
-        lexeme = self._imperative_from_lexeme(
-            self._verb_lexeme(lemma)
-        )
-        tag_str = str(parse.tag)
-
-        result = [lexeme]
-        if reflexive:
-            result.append(self._particle("reflexive", "ся"))
-        if "plur" in tag_str:
-            result.insert(0, self._particle("imperative_you", "вы"))
-        return result
-
-    def _imperative_from_lexeme(self, lexeme: str) -> str:
-        """Каноническая лексема уже является формой императива (§8)."""
-        return lexeme
-
-    # ═══════════════════════════════════════════
-    # ГЛАГОЛ / ПРЕДИКАТОР
-    # ═══════════════════════════════════════════
-
-    def _process_verb(
-        self,
-        token: str,
-        tokens: list[str],
-        index: int,
-    ) -> Optional[tuple[list[str], bool]]:
-
-        parses = self.morph.parse(token)
-        candidates = [
-            p
-            for p in parses
-            if p.tag.POS in {
-                "VERB", "INFN", "PRTF", "PRTS", "GRND", "ADJS",
-            }
-        ]
-        if not candidates:
-            return None
-
-        # Предпочитаем глагольный разбор известного глагола:
-        # у форм типа «читаем» pymorphy ставит на первое место
-        # краткое причастие («читаемый»), что даёт ложный пассив.
-        parse = next(
-            (
-                p
-                for p in candidates
-                if p.tag.POS in {"VERB", "INFN"}
-                and p.normal_form in self.verbs
-            ),
-            candidates[0],
-        )
-
-        lemma = parse.normal_form
-
-        if lemma == "быть":
-            return None
-
-        # ── Краткое причастие / прилагательное = пассив ──
-        if parse.tag.POS in {"PRTF", "PRTS", "ADJS"}:
-            # Защита: неизвестное слово с морфологическим разбором
-            # «краткое прилагательное» (напр. «зоркало») — не пассив,
-            # а неизвестное слово; оно пройдёт в вывод как есть.
-            verb_lemma = self._participle_to_verb(parse.normal_form)
-            if verb_lemma not in self.verbs:
-                return None
-            return self._process_participle(
-                parse, token, tokens, index
-            )
-
-        # ── Мутатив ──
-        # «становиться» тоже мутатив, а не возвратный глагол.
-        if lemma in {"стать", "становиться"}:
-            result = self._tense_and_aspect(parse, lemma)
-            result.append(self._particle("mutative_state", "ста"))
-            return result, False
-
-        # ── Возвратный глагол ──
-        if lemma.endswith(("ся", "сь")):
-            base = re.sub(r"(ся|сь)$", "", lemma)
-            lexeme = self._verb_lexeme(base)
-            result = self._tense_and_aspect(parse, base)
-            result.append(lexeme)
-            result.append(self._particle("reflexive", "ся"))
-            return result, False
-
-        # ── Результативный глагол ──
-        if lemma in self.aspect_verbs:
-            result = self._tense_only(parse)
-            result.extend(self.aspect_verbs[lemma].split())
-            return result, False
-
-        # ── Фаза (БЕЗ маркера времени) ──
-        if lemma in {"начать", "начинать"}:
-            return [self._particle("inchoative", "нач")], False
-
-        if lemma in {"перестать", "переставать"}:
-            return [self._particle("cessative", "пере")], False
-
-        if lemma in {"продолжить", "продолжать"}:
-            return [self._particle("continuative", "прод")], False
-
-        # ── Обычный глагол ──
-        # Неизвестная лемма допускается, только если словоформа
-        # уверенно глагольная (суммарная масса глагольных разборов);
-        # тогда лексема выводится от основы («закрыть» → «закры»).
-        # Иначе («русит» как имя: масса существительных выше)
-        # слово пройдёт дальше и сохранится как есть.
-        if lemma not in self.verbs:
-            verb_mass = sum(
-                p.score
-                for p in parses
-                if p.tag.POS
-                in {"VERB", "INFN", "PRTF", "PRTS", "GRND"}
-            )
-            if verb_mass < 0.5:
-                return None
-
-        lexeme = self._verb_lexeme(lemma)
-        result = self._tense_and_aspect(parse, lemma)
-        result.append(lexeme)
-        return result, False
-
-    # ═══════════════════════════════════════════
-    # ПРИЧАСТИЕ = ПАССИВ
-    # ═══════════════════════════════════════════
-
-    def _process_participle(
-        self, parse, token, tokens, index,
-    ) -> tuple[list[str], bool]:
-        result: list[str] = []
-
-        # Граничная частица: завершённость. Завершённый пассив —
-        # кон; действительное причастие несовершенного вида
-        # («человек, который сиди») — без частицы.
-        aspect = parse.tag.aspect
-        tag_str = str(parse.tag)
-        passive = "pssv" in tag_str
-        past = "past" in tag_str
-        if aspect == "perf" or (passive and past):
-            result.append(self._particle("telic", "кон"))
-
-        verb_lemma = self._participle_to_verb(parse.normal_form)
-        result.append(self._verb_lexeme(verb_lemma))
-
-        return result, True
-
-    def _participle_to_verb(self, participle_lemma: str) -> str:
-        for p in self.morph.parse(participle_lemma):
-            if p.tag.POS == "INFN":
-                return p.normal_form
-
-        # Раньше здесь было совпадение первых трёх букв с лексемой
-        # глагола: «красивый» превращалось в «красть» → «крад».
-        # Надёжные источники — инфинитив из разбора и суффикс
-        # причастия; короткий префикс даёт слишком много ложных пар.
-        for suffix in ("нный", "енный", "тый", "атый", "ялый"):
-            if participle_lemma.endswith(suffix):
-                stem = participle_lemma[: -len(suffix)]
-                candidate = stem + "ть"
-                if candidate in self.verbs:
-                    return candidate
-                return candidate
-
-        return participle_lemma
-
-    def _is_passive_participle(self, token: str) -> bool:
-        for p in self.morph.parse(token):
-            if p.tag.POS in {"PRTF", "PRTS", "ADJS"}:
-                return True
-        return False
-
-    # ═══════════════════════════════════════════
-    # МУТАТИВ
-    # ═══════════════════════════════════════════
-
-    def _next_meaningful_token(
-        self, tokens: list[str], index: int
-    ) -> Optional[str]:
-        for tok in tokens[index + 1:]:
-            if not self._is_punctuation(tok):
-                return tok
-        return None
-
-    def _is_possessive_position(
-        self, tokens: list[str], index: int
-    ) -> bool:
-        """«его/ее/их» перед именем — притяжание (§4.2).
-
-        В остальных позициях это личные местоимения:
-        «вижу его» → «види он», а не «види у он».
-        """
-        next_tok = self._next_meaningful_token(tokens, index)
-        if next_tok is None or next_tok in self.conjunctions:
-            return False
-        if (
-            next_tok in self.nouns
-            or next_tok in self.qualifiers
-            or next_tok in self.relative_adjectives
-        ):
-            return True
-        return any(
-            p.tag.POS in {"NOUN", "ADJF", "PRTF"}
-            for p in self.morph.parse(next_tok)
-        )
-
-    def _possessive_owner(self, token: str) -> Optional[str]:
-        """Притяжательное прилагательное («мамин») → владелец.
-
-        Леммы на «-ин» дают владельца через основу + «-а»:
-        мамин → мама, папин → папа, бабушкин → бабушка.
-        """
-        for p in self.morph.parse(token):
-            if p.tag.POS != "ADJF" or "Poss" not in str(p.tag):
-                continue
-            lemma = p.normal_form.replace("ё", "е")
-            if lemma.endswith("ин"):
-                return lemma[:-2] + "а"
-        return None
-
-    def _is_form_of(self, token: str, lemma: str) -> bool:
-        return any(
-            p.normal_form.replace("ё", "е") == lemma
-            for p in self.morph.parse(token)
-        )
-
-    def _accusative_context(
-        self, tokens: list[str], index: int
-    ) -> bool:
-        """Паттерн «V + прилагательное + существительное»:
-        винительный падеж одушевлённого совпадает с родительным,
-        родительный маркер не нужен («вижу большого человека»)."""
-        meaningful = [
-            t for t in tokens[:index] if not self._is_punctuation(t)
-        ]
-        if len(meaningful) < 2:
-            return False
-        adj, verb = meaningful[-1], meaningful[-2]
-        if not any(
-            p.tag.POS in {"VERB", "INFN"}
-            for p in self.morph.parse(verb)
-        ):
-            return False
-        return any(
-            p.tag.POS in {"ADJF", "PRTF"}
-            for p in self.morph.parse(adj)
-        )
-
-    def _plural_modifier_before(
-        self, tokens: list[str], index: int
-    ) -> bool:
-        """Предыдущее значимое слово — множественное прилагательное,
-        причастие или определитель («заинтересованные стороны»)."""
-        prev = None
-        for tok in tokens[:index]:
-            if not self._is_punctuation(tok):
-                prev = tok
-        if prev is None:
-            return False
-        # Само количественное слово тоже может иметь множественный
-        # разбор («многие» = ADJF plur) — оно не создаёт plural_ctx.
-        if prev in {
-            "много", "многие", "многих", "многим",
-            "несколько", "нескольких", "множество",
-        }:
-            return False
-        # «его книга» / «его книги»: неопределённая форма 3-го лица
-        # сама по себе не делает следующее имя множественным.
-        # Но слабо различаемые формы («книги») всё же должны получить
-        # маркер «много», поэтому смотрим разбор самого имени.
-        if prev in _AMBIGUOUS_POSSESSIVES and index < len(tokens):
-            return any(
-                p.tag.POS == "NOUN" and p.tag.number == "plur"
-                for p in self.morph.parse(tokens[index])
-            )
-        for p in self.morph.parse(prev):
-            if (
-                p.tag.POS in {"ADJF", "PRTF", "PRTS"}
-                and p.tag.number == "plur"
-            ):
-                return True
-        return False
-
-    def _quantifier_before(
-        self, tokens: list[str], index: int
-    ) -> bool:
-        """Перед существительным стоит количественное слово."""
-        prev = None
-        for tok in tokens[:index]:
-            if not self._is_punctuation(tok):
-                prev = tok
-        if prev is None:
-            return False
-        if prev in {
-            "много", "многие", "многих", "многим",
-            "несколько", "нескольких", "множество",
-        }:
-            return True
-        return self._is_numeral(prev)
-
-    # ═══════════════════════════════════════════
-    # TAM + ASPECT
-    # ═══════════════════════════════════════════
-
-    def _get_tense(self, parse) -> Optional[str]:
-        tense = parse.tag.tense
-        if tense in ("past", "futr", "pres"):
-            return tense
-        tag_str = str(parse.tag)
-        if "past" in tag_str:
-            return "past"
-        if "futr" in tag_str:
-            return "futr"
-        return None
-
-    def _tense_only(self, parse) -> list[str]:
-        result: list[str] = []
-        tense = self._get_tense(parse)
-        if tense == "past":
-            result.append(self._particle("past", "был"))
-        elif tense == "futr":
-            result.append(self._particle("future", "буд"))
-        return result
-
-    def _tense_and_aspect(self, parse, lemma: str) -> list[str]:
-        result: list[str] = []
-
-        if parse.tag.POS == "INFN":
-            return result
-
-        tense = self._get_tense(parse)
-        if tense == "past":
-            result.append(self._particle("past", "был"))
-        elif tense == "futr":
-            result.append(self._particle("future", "буд"))
-
-        aspect = parse.tag.aspect
-        if aspect == "perf" and parse.tag.POS != "INFN":
-            result.append(self._particle("telic", "кон"))
-
-        return result
-
-    # ═══════════════════════════════════════════
-    # LEXICON ACCESS
-    # ═══════════════════════════════════════════
-
-    def _verb_lexeme(self, lemma: str) -> str:
-        if lemma in self.verbs:
-            return self.verbs[lemma]
-
-        if lemma.endswith(("ся", "сь")):
-            base = re.sub(r"(ся|сь)$", "", lemma)
-            if base in self.verbs:
-                return self.verbs[base]
-            candidate = base + "ть"
-            if candidate in self.verbs:
-                return self.verbs[candidate]
-
-        return self._derive_verb_lexeme(lemma)
-
-    def _derive_verb_lexeme(self, lemma: str) -> str:
-        if lemma.endswith("чь"):
-            return lemma[:-2] + "г"
-        if lemma.endswith("сть"):
-            return lemma[:-3] + "д"
-        if lemma.endswith("ти"):
-            return lemma[:-2] + "и"
-        if lemma.endswith("ть"):
-            stem = lemma[:-2]
-            if self._requires_epenthesis(stem):
-                return stem + "ти"
-            return stem
-        return lemma
-
-    def _requires_epenthesis(self, stem: str) -> bool:
-        if stem in {"би", "мы", "вы", "да", "не", "ли", "бы"}:
-            return True
-        return bool(
-            re.fullmatch(
-                r"[бвгджзйклмнпрстфхцчшщ][аеёиоуыэюя]", stem
-            )
-        )
-
-    # ═══════════════════════════════════════════
-    # NOMINAL
-    # ═══════════════════════════════════════════
-
-    def _nominal_output(
-        self, token: str, force_plural: bool = False
-    ) -> list[str]:
-        if token in self.pronouns:
-            return self.pronouns[token].split()
-        if token in _PRONOUN_FALLBACKS:
-            return [_PRONOUN_FALLBACKS[token]]
-        if token in self.relative_pronouns:
-            return self.relative_pronouns[token].split()
-
-        # Дефисный композит: «бизнес-процессы» → «много бизнес-процесс».
-        if "-" in token:
-            head, tail = token.rsplit("-", 1)
-            if re.fullmatch(r"[а-я]+", head) and re.fullmatch(
-                r"[а-я]+", tail
-            ):
-                parts = self._nominal_output(
-                    tail, force_plural=force_plural
-                )
-                if parts and parts[0] == "много":
-                    return ["много", head + "-" + parts[1]]
-                return [head + "-" + parts[0]]
-
-        # Множественное число
-        if force_plural or self._is_plural_form(token):
-            if self._is_nominal(token):
-                base = self._get_singular_base(token)
-                return ["много", base]
-
-        if token in self.nouns:
-            return self.nouns[token].split()
-        if token in self.qualifiers:
-            return self.qualifiers[token].split()
-        if token in self.relative_adjectives:
-            return [token]
-
-        # Неизвестное слово → сохранить
-        if not self._is_known_morphological_nominal(token):
-            # Прилагательное неизвестного происхождения всё же
-            # сохраняет полную каноническую форму (§5.2):
-            # «заинтересованные стороны» → «заинтересованный …».
-            # Только ADJF: каноническая форма PRTF у pymorphy —
-            # инфинитив, а не полная форма причастия.
-            for p in self.morph.parse(token):
-                if p.tag.POS == "ADJF" and p.score > 0.1:
-                    return [p.normal_form.replace("ё", "е")]
-            # Краткое прилагательное → полная каноническая форма:
-            # «необязательны» → «необязательный».
-            # Порог выше, чем у ADJF: неизвестные слова («зоркало»)
-            # имеют низкий score краткого разбора.
-            for p in self.morph.parse(token):
-                if p.tag.POS == "ADJS" and p.score > 0.7:
-                    return [p.normal_form.replace("ё", "е")]
-            # Неизвестное существительное → лемма
-            # («последовательности» → «последовательность»).
-            for p in self.morph.parse(token):
-                if p.tag.POS == "NOUN" and p.score > 0.1:
-                    return [p.normal_form.replace("ё", "е")]
-            return [token]
-
-        return [self._nominal_fallback(token)]
-
-    def _is_plural_form(self, token: str) -> bool:
-        for p in self.morph.parse(token):
-            if p.tag.POS == "NOUN" and p.score > 0.5:
-                if p.tag.number == "plur":
-                    return True
-        return False
-
-    def _get_singular_base(self, token: str) -> str:
-        for p in self.morph.parse(token):
-            if p.tag.POS == "NOUN" and p.score > 0.5:
-                lemma = p.normal_form
-                if lemma in self.nouns:
-                    return self.nouns[lemma]
-                return lemma
-        if token in self.nouns:
-            return self.nouns[token]
-        return token
-
-    def _is_known_morphological_nominal(
-        self, token: str
-    ) -> bool:
-        for p in self.morph.parse(token):
-            if p.tag.POS not in {
-                "NOUN", "ADJF", "PRON", "NPRO",
-            }:
-                continue
-            # Лемма из лексикона узнаётся независимо от score:
-            # иначе формы типа «темным» (score ≈ 0.4) уходят
-            # в неизвестные слова вместо нормализации к полной форме.
-            lemma = p.normal_form.replace("ё", "е")
-            if (
-                lemma in self.nouns
-                or lemma in self.qualifiers
-                or lemma in self.relative_adjectives
-            ):
-                return True
-            if p.score > 0.7:
-                if p.normal_form != token:
-                    return True
-                if token in self.nouns or token in self.qualifiers:
-                    return True
-                return False
-        return False
-
-    def _nominal_fallback(self, token: str) -> str:
-        parses = self.morph.parse(token)
-        if not parses:
-            return token
-
-        parse = parses[0]
-
-        if parse.tag.POS == "NOUN":
-            lemma = parse.normal_form.replace("ё", "е")
-            if lemma in self.nouns:
-                return self.nouns[lemma]
-            return lemma
-
-        if parse.tag.POS in {"ADJF", "ADJS"}:
-            # Прилагательное сохраняет полную каноническую форму (§5.2).
-            # При омонимии («большим» = «большой» / «больший»)
-            # предпочитаем разбор с леммой из лексикона.
-            for p in parses:
-                lemma = p.normal_form.replace("ё", "е")
-                if p.tag.POS in {"ADJF", "ADJS"} and (
-                    lemma in self.qualifiers
-                    or lemma in self.relative_adjectives
-                ):
-                    return lemma
-            return parse.normal_form.replace("ё", "е")
-
-        if parse.tag.POS == "ADVB":
-            return token
-
-        if parse.tag.POS in {"NPRO", "PRON"}:
-            lemma = parse.normal_form.replace("ё", "е")
-            if lemma in self.pronouns:
-                return self.pronouns[lemma]
-            if lemma in _PRONOUN_FALLBACKS:
-                return _PRONOUN_FALLBACKS[lemma]
-            return lemma
-
-        return parse.normal_form
-
-    # ═══════════════════════════════════════════
-    # есть₂
-    # ═══════════════════════════════════════════
-
-    def _is_existential_context(
-        self, tokens: list[str], index: int
-    ) -> bool:
-        before = tokens[:index]
-        if "у" in before:
-            return True
-        if any(prep in before for prep in ("в", "на")):
-            return True
-        return False
-
-    # ═══════════════════════════════════════════
-    # СРАВНИТЕЛЬНАЯ СТЕПЕНЬ (§5.4)
-    # ═══════════════════════════════════════════
-
-    def _comparison_context(
-        self, tokens: list[str], index: int
-    ) -> bool:
-        """Контекст сравнения: COMP-форма с именным подлежащим слева.
-        «Больше людей пришло» — количественное слово: подлежащего
-        слева нет. «Беги быстрее» — наречие: слева глагол,
-        а не имя. Стандарт сравнения («меня», «брата») необязателен:
-        «это хуже» → «этот более плохой»."""
-        prev = None
-        for tok in tokens[:index]:
-            if not self._is_punctuation(tok):
-                prev = tok
-        if prev is None:
-            return False
-        if not self._is_nominal(prev) and prev not in self.pronouns:
-            return False
-        return True
-
-    def _comparative_positive(self, token: str) -> Optional[str]:
-        """COMP-форма → полная каноническая форма прилагательного.
-
-        Лемма COMP у pymorphy обычно уже прилагательное
-        («больше» → «большой»); у слов типа «выше» лемма —
-        наречие «высоко», и полная форма выводится заменой
-        конечного «-о» на «-ий»/«-ой». Если полной формы в
-        лексиконе нет, слово не трогаем."""
-        for p in self.morph.parse(token):
-            if p.tag.POS != "COMP":
-                continue
-            lemma = p.normal_form.replace("ё", "е")
-            if lemma in self.qualifiers:
-                return self.qualifiers[lemma]
-            for candidate in (lemma[:-1] + "ий", lemma[:-1] + "ой"):
-                if candidate in self.qualifiers:
-                    return self.qualifiers[candidate]
-            return None
-        return None
-
-    # ═══════════════════════════════════════════
-    # Родительный → у
-    # ═══════════════════════════════════════════
-
-    def _is_genitive_noun(self, token: str) -> bool:
-        for parse in self.morph.parse(token):
-            if parse.tag.POS == "NOUN" and parse.score > 0.5:
-                if "gent" in str(parse.tag):
-                    return True
-        return False
-
-    def _verb_accusative_plural(
-        self, tokens: list, index: int, token: str
-    ) -> bool:
-        """Формы типа «заявления» (род. ед. = вин. мн.): после глагола
-        читаются как винительный множественный
-        («принимаем заявления» → «принима много заявление»),
-        а не как родительный («у заявление»)."""
-        if not any(
-            p.tag.POS == "NOUN"
-            and "accs" in str(p.tag)
-            and p.tag.number == "plur"
-            for p in self.morph.parse(token)
-        ):
-            return False
-        prev = None
-        for tok in tokens[:index]:
-            if not self._is_punctuation(tok):
-                prev = tok
-        if prev is None:
-            return False
-        return any(
-            p.tag.POS in {"VERB", "INFN"}
-            for p in self.morph.parse(prev)
-        )
-
-    # ═══════════════════════════════════════════
-    # PASSIVE
-    # ═══════════════════════════════════════════
-
-    def _find_passive_agent(
-        self, tokens: list[str], verb_index: int
-    ) -> Optional[int]:
-        for index in range(verb_index + 1, len(tokens)):
-            token = tokens[index]
-            if self._is_punctuation(token):
-                continue
-            if token in self.prepositions or token in self.conjunctions:
-                continue
-            if self._is_animate_instrumental(token):
-                return index
-            if self._is_nominal(token):
-                return None
-        return None
-
-    def _is_instrumental(self, token: str) -> bool:
-        for parse in self.morph.parse(token):
-            if (
-                parse.tag.POS in {
-                    "NOUN", "ADJF", "PRTF", "NPRO",
-                }
-                and "ablt" in str(parse.tag)
-                and parse.score > 0.5
-            ):
-                return True
-        return False
-
-    def _is_animate_instrumental(self, token: str) -> bool:
-        """Одушевлённое существительное в творительном —
-        кандидат в агенты пассива. Неодушевлённое («артефактами»)
-        — главное слово причастия, а не агент."""
-        for parse in self.morph.parse(token):
-            if (
-                parse.tag.POS == "NOUN"
-                and "ablt" in str(parse.tag)
-                and "anim" in str(parse.tag)
-            ):
-                return True
-        return False
-
-    # ═══════════════════════════════════════════
-    # HELPERS
-    # ═══════════════════════════════════════════
-
-    def _is_nominal(self, token: str) -> bool:
-        if token in self.nouns or token in self.qualifiers:
-            return True
-        if token in self.relative_adjectives or token in self.pronouns:
-            return True
-        return any(
-            p.tag.POS in {"NOUN", "ADJF", "NPRO"}
-            for p in self.morph.parse(token)
-        )
-
-    def _is_numeral(self, token: str) -> bool:
-        if token in {"один", "одна", "одно", "одни"}:
-            return False
-        if re.fullmatch(r"\d+", token):
-            return True
-        return any(
-            p.tag.POS in {"NUMR", "NUMB"}
-            for p in self.morph.parse(token)
-        )
-
-    def _numeral_base(self, token: str) -> str:
-        if re.fullmatch(r"\d+", token):
-            return token
-        parses = self.morph.parse(token)
-        return parses[0].normal_form if parses else token
-
-    def _determiner(self, token: str) -> Optional[str]:
-        if token in {"один", "одна", "одно", "одни"}:
-            return "один"
-        if token in {"этот", "эта", "это", "эти"}:
-            return "этот"
-        if token in {"тот", "та", "то", "те"}:
-            return "тот"
-        # Склонённые формы: «этом», «того», «одним» и т.п.
-        for p in self.morph.parse(token):
-            lemma = p.normal_form.replace("ё", "е")
-            if lemma == "этот":
-                return "этот"
-            if lemma == "тот":
-                return "тот"
-            if lemma == "один":
-                return "один"
-        return None
 
     def _special_particle(self, token: str) -> str:
         mapping = {
@@ -1424,6 +662,7 @@ class RusitTranslator:
             "самый": "самый", "уже": "уже",
         }
         return mapping.get(token, token)
+
 
     @staticmethod
     def _append_punctuation(output: list[str], token: str) -> None:
@@ -1438,3 +677,4 @@ class RusitTranslator:
     @staticmethod
     def _is_punctuation(token: str) -> bool:
         return bool(re.fullmatch(r"[!?.,;:—-]", token))
+

@@ -23,7 +23,7 @@ def test_translate_file_to_file(tmp_path):
 
     assert main(["translate", "-i", str(source), "-o", str(target)]) == 0
     assert target.read_text(encoding="utf-8") == (
-        "я чита книга.\nли ты я люби?\nя чита книга, а он спи.\n"
+        "я чита книга.\nли ты люби я?\nя чита книга, а он спи.\n"
     )
 
 

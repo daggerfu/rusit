@@ -1,6 +1,8 @@
-"""Валидатор грамматики РУСИТ 5.0."""
+"""Валидатор грамматики РУСИТ 5.3.1."""
 
 from __future__ import annotations
+
+import re
 from dataclasses import dataclass, field
 
 
@@ -25,6 +27,19 @@ INCOMPATIBLE = {
     frozenset({"про", "сей"}), frozenset({"про", "ста"}),
     frozenset({"сей", "прод"}), frozenset({"сей", "кон"}),
 }
+
+RELATIONAL = {"у", "от", "к", "с", "в", "на", "из", "о"}
+
+PARTICLES = {
+    "не", "был", "буд", "про", "сей",
+    "кон", "нач", "пере", "прод", "получ", "перест",
+    "ста", "ся", "ли", "бы", "да", "же",
+    "уже", "ещё", "еще", "есть", "би", "вы",
+}
+
+DEPENDENT_REQUIRED = RELATIONAL | {"би"}
+
+_TOKEN_RE = re.compile(r"[А-Яа-яЁёA-Za-z]+|\d+|[!?.,;:—\-]")
 
 
 @dataclass
@@ -79,13 +94,33 @@ class RusitValidator:
                 break
             prev_zone = zone
 
-        # 5. Незавершённые предлоги
+        # 5. Незавершённые предлоги / маркеры без зависимого слова
         for i, tok in enumerate(tokens):
-            if tok in ("у", "от", "к", "с", "в", "на", "из", "о", "би"):
+            if tok in DEPENDENT_REQUIRED:
                 if i + 1 >= len(tokens):
-                    errors.append(f"Предлог '{tok}' без зависимого слова")
+                    errors.append(f"'{tok}' без зависимого слова")
 
         return ValidationResult(ok=len(errors) == 0, errors=errors, warnings=warnings)
 
     def is_valid(self, sentence: str) -> bool:
         return self.validate(sentence).ok
+
+    def explain(self, text: str) -> list[dict]:
+        """Классификация токенов РУСИТ-текста."""
+        result = []
+        for token in _TOKEN_RE.findall(text):
+            lower = token.lower()
+            if re.fullmatch(r"[!?.,;:—\-]", token):
+                result.append({"token": token, "type": "punctuation"})
+            elif lower in PARTICLES:
+                item = {"token": token, "type": "particle"}
+                if lower in ZONE_ORDER:
+                    item["zone"] = ZONE_ORDER[lower]
+                if lower in BOUNDARY:
+                    item["boundary"] = True
+                result.append(item)
+            elif lower in RELATIONAL:
+                result.append({"token": token, "type": "relational"})
+            else:
+                result.append({"token": token, "type": "lexeme"})
+        return result

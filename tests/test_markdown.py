@@ -91,7 +91,7 @@ def test_inline_code_link_destination_and_html_untouched(tr):
 def test_no_punctuation_or_blank_lines_lost(tr):
     source = "Ты меня любишь?\n\nЯ читаю книгу, а он спит.\n"
     assert tr.translate_markdown(source) == (
-        "ли ты я люби?\n\nя чита книга, а он спи.\n"
+        "ли ты люби я?\n\nя чита книга, а он спи.\n"
     )
 
 

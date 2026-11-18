@@ -59,7 +59,7 @@ def _cmd_lexicon(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="rusit", description="RUSIT 3.0 utility toolkit")
+    parser = argparse.ArgumentParser(prog="rusit", description="RUSIT 5.3.1 utility toolkit")
     sub = parser.add_subparsers(dest="cmd", required=True)
     tr = sub.add_parser("translate", help="translate Russian text to RUSIT")
     tr.add_argument("text", nargs="*", help="text to translate; stdin is used if omitted")
@@ -84,6 +84,14 @@ def main(argv: list[str] | None = None) -> int:
         help="то же, что --format markdown",
     )
     tr.add_argument("--db", help="путь к SQLite-базе лексикона")
+    tr.add_argument(
+        "--spacy", action="store_true",
+        help="использовать spaCy для синтаксического разбора",
+    )
+    tr.add_argument(
+        "--spacy-model", default="ru_core_news_sm",
+        help="имя spaCy-модели (по умолчанию: ru_core_news_sm)",
+    )
     val = sub.add_parser("validate", help="validate RUSIT text")
     val.add_argument("text", nargs="*", help="text to validate; stdin is used if omitted")
     exp = sub.add_parser("explain", help="print token-level RUSIT labels as JSON")
@@ -95,9 +103,53 @@ def main(argv: list[str] | None = None) -> int:
     lex.add_argument("action", choices=["init", "export", "add", "remove", "list"])
     lex.add_argument("db")
     lex.add_argument("params", nargs="*", help="аргументы действия")
+    repl = sub.add_parser(
+        "repl", aliases=["echo"],
+        help="интерактивный режим: русский → РУСИТ построчно",
+    )
+    repl.add_argument("--db", help="путь к SQLite-базе лексикона")
+    repl.add_argument(
+        "--spacy", action="store_true",
+        help="использовать spaCy для синтаксического разбора",
+    )
+    repl.add_argument(
+        "--spacy-model", default="ru_core_news_sm",
+        help="имя spaCy-модели (по умолчанию: ru_core_news_sm)",
+    )
     args = parser.parse_args(argv)
 
     text = " ".join(getattr(args, "text", []) or []).strip()
+
+    if args.cmd in {"repl", "echo"}:
+        translator = RusitTranslator(
+            db_path=getattr(args, "db", None),
+            use_spacy=getattr(args, "spacy", False),
+            spacy_model=getattr(args, "spacy_model", "ru_core_news_sm"),
+        )
+        prompt = sys.stdin.isatty() and sys.stdout.isatty()
+        try:
+            while True:
+                if prompt:
+                    try:
+                        line = input("ru> ")
+                    except EOFError:
+                        print()
+                        break
+                else:
+                    line = sys.stdin.readline()
+                    if not line:
+                        break
+                    line = line.rstrip("\n\r")
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if stripped in {"/exit", "/quit", ":q", ":quit"}:
+                    break
+                print(translator.translate(line, preserve_punctuation=True))
+        except KeyboardInterrupt:
+            if prompt:
+                print()
+        return 0
 
     if args.cmd == "translate":
         from_file = False
@@ -123,9 +175,10 @@ def main(argv: list[str] | None = None) -> int:
         elif not text:
             text = sys.stdin.read().strip()
 
-        translator = (
-            RusitTranslator(db_path=args.db) if args.db
-            else RusitTranslator()
+        translator = RusitTranslator(
+            db_path=args.db,
+            use_spacy=getattr(args, "spacy", False),
+            spacy_model=getattr(args, "spacy_model", "ru_core_news_sm"),
         )
         markdown_suffixes = {
             ".md", ".markdown", ".mdown", ".mkd", ".mdx",

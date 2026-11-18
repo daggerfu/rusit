@@ -11,8 +11,8 @@ Run everything from the repo root: the default lexicon path is the relative
 
 ```bash
 python3 -m pip install -e . pymorphy3 pytest   # python3; `python` may not exist
-python3 -m pytest tests -q                     # full suite: 236 tests (slow, 1–3 min)
-python3 -m pytest tests/test_rusit.py::TestBasicSVO::test_simple_present -q
+python3 -m pytest tests -q                     # полный набор: 286 тестов (медленно, 1–3 мин)
+python3 -m pytest tests/test_rusit_basic.py::TestBasicSVO::test_simple_present -q
 ```
 
 `pyproject.toml` declares no dependencies, but `rusit/translator.py` hard-imports
@@ -34,26 +34,29 @@ each fixture constructs `pymorphy3.MorphAnalyzer()`.
   markup are masked with placeholders, only plain text is translated. Used by
   `translate_markdown()` and CLI auto-detection (`.md` suffix, `--format
   markdown`, `--markdown`).
-- `tests/test_rusit.py` — main suite; `tests/test_cli.py` — file I/O tests;
+- `tests/test_rusit_basic.py`, `test_rusit_nominals.py`, `test_rusit_syntax.py`,
+  `test_validator.py`, `test_rusit_misc.py` — разделённый основной набор;
+  `tests/test_cli.py` — file I/O tests;
   `tests/test_markdown.py` — Markdown preservation tests.
 - `rusit/db.py` — optional SQLite lexicon (`lexicon init` imports JSON;
   `translate --db file.db` bypasses the JSON lexicon).
 - `rusit/corpus.py` — 5-row demo corpus; `score` reports exact and validator
-  counts (currently `{total: 5, exact: 2, valid: 5}`, so exact ≠ total).
+  counts (currently `{total: 5, exact: 5, valid: 5}`).
 - `rusit/core.py` and `rusit/rusit_lexicon.json` — legacy RUSIT 3.0 code/data,
-  unused. Root `rusit_lexicon.json` is the live v5.0 lexicon.
+  unused. Root `rusit_lexicon.json` is the live v5.3.1 lexicon.
 - `RUSIT_5.3.1.md` — normative language specification; not imported by code.
 
 ## Gotchas
 
-- `README.md` still calls the project RUSIT 3.0, but the code needs `pymorphy3`
-  and implements RUSIT 5.0 against the 5.3.1 spec.
-- `use_spacy` and the `tr_spacy` test fixture are misleading: the argument is
-  accepted but ignored, and spaCy is never used. Do not add spaCy.
-- CLI `explain` is broken: it calls the nonexistent `RusitValidator.explain`
-  and raises `AttributeError`. `validate` works and exits 1 on invalid input.
+- The project targets RUSIT 5.3.1 and requires `pymorphy3` at runtime.
+- spaCy is available as an optional syntactic-analysis backend; the default translator behavior remains based on `pymorphy3` and heuristics unless spaCy is explicitly enabled. A Russian spaCy model (e.g. `ru_core_news_sm`) must be installed separately for spaCy mode.
 - Мутатив — всегда `ста` (§7.6); `станов` из ранних версий исключён. Perfective
   мутатива выражается сочетанием `кон ста` (§21.2), imperfective — одним `ста`.
+- Число грамматически нейтральное (§3.2): форма существительного не
+  различает один и несколько предметов. `много` появляется только от явного
+  квантификатора/числительного/детерминанта, а не от окончаний русского слова.
+- Прошедшее совершенное вида — одна граничная частица `кон` без `был`
+  (§7.2); `был кон` сохраняется только для предшествования прошлому моменту.
 - Прилагательные сохраняют полную каноническую форму (§5.2): усечения нет.
 - Императив совпадает с канонической лексемой (§8): `чита!`, `вы чита!`, а не
   `читай`.

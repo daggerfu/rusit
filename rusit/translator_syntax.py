@@ -1,0 +1,550 @@
+"""Syntax/structure mixin for RUSIT translator."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from .translator_constants import (
+    _AMBIGUOUS_POSSESSIVES,
+    _DATIVE_PRONOUNS,
+    _POSSESSIVES,
+    _STANDALONE_POSSESSIVE_LEMMAS,
+)
+
+class SyntaxMixin:
+    def _restructure_participles(self, tokens: list[str]) -> list[str]:
+        """Причастий в РУСИТ нет: определительное причастие
+        перестраивается в относительную клаузу.
+
+        Постпозитив (требует запятой): «дом, построенный …»
+        → «дом, который кон строи …».
+        Препозитив (согласование по роду и числу):
+        «созданные ранее артефакты»
+        → «артефакт который кон созда ранее».
+        Предикативный пассив без запятой не трогаем (§14).
+        """
+        result = list(tokens)
+        i = 0
+        while i < len(result):
+            token = result[i]
+            if not self._is_attributive_participle(token):
+                i += 1
+                continue
+
+            # Постпозитив: NOUN "," PART
+            if (
+                i >= 2
+                and result[i - 1] == ","
+                and self._is_noun_token(result[i - 2])
+            ):
+                head = result[i - 2]
+                result[i - 2 : i + 1] = [head, ",", "который", token]
+                i += 3
+                continue
+
+            # Препозитив: PART (ADVB)* NOUN с согласованием
+            j = i + 1
+            while j < len(result) and self._is_adverb_token(result[j]):
+                j += 1
+            if (
+                j < len(result)
+                and self._is_noun_token(result[j])
+                and not self._is_animate_instrumental(result[j])
+                and self._agrees_in_gn(token, result[j])
+            ):
+                noun = result[j]
+                del result[j]
+                result[i:i] = [noun, "который"]
+                i += 3
+                continue
+
+            i += 1
+        return result
+
+
+    def _is_attributive_participle(self, token: str) -> bool:
+        for p in self.morph.parse(token):
+            if p.tag.POS not in {"PRTF", "PRTS"}:
+                continue
+            if self._participle_to_verb(p.normal_form) in self.verbs:
+                return True
+        return False
+
+
+    def _is_noun_token(self, token: str) -> bool:
+        return any(
+            p.tag.POS == "NOUN"
+            for p in self.morph.parse(token)
+        )
+
+
+    def _is_adverb_token(self, token: str) -> bool:
+        return any(
+            p.tag.POS == "ADVB"
+            for p in self.morph.parse(token)
+        )
+
+
+    def _agrees_in_gn(self, participle: str, noun: str) -> bool:
+        """Согласование причастия с существительным: число обязательно,
+        род — когда у причастия он выражен (во мн.ч. pymorphy
+        род причастия пустой, а существительное сохраняет)."""
+        p_gn = [
+            (p.tag.gender, p.tag.number)
+            for p in self.morph.parse(participle)
+            if p.tag.POS in {"PRTF", "PRTS"}
+        ]
+        for p in self.morph.parse(noun):
+            if p.tag.POS != "NOUN":
+                continue
+            for gender, number in p_gn:
+                if p.tag.number != number:
+                    continue
+                if gender is None or gender == p.tag.gender:
+                    return True
+        return False
+
+    # ═══════════════════════════════════════════
+    # пусть / давайте
+    # ═══════════════════════════════════════════
+
+
+    def _normalize_imperative_constructions(
+        self, tokens: list[str]
+    ) -> list[str]:
+        result: list[str] = []
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "пусть":
+                result.append(self._particle("imperative", "да"))
+                i += 1
+                continue
+            if token == "давайте":
+                result.append(self._particle("imperative", "да"))
+                result.append("мы")
+                i += 1
+                continue
+            result.append(token)
+            i += 1
+        return result
+
+    # ═══════════════════════════════════════════
+    # ИМПЕРАТИВ
+    # ═══════════════════════════════════════════
+
+
+    def _next_meaningful_token(
+        self, tokens: list[str], index: int
+    ) -> Optional[str]:
+        for tok in tokens[index + 1:]:
+            if not self._is_punctuation(tok):
+                return tok
+        return None
+
+
+    def _is_possessive_position(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """«его/ее/их» перед именем — притяжание (§4.2).
+
+        В остальных позициях это личные местоимения:
+        «вижу его» → «види он», а не «види у он».
+        """
+        next_tok = self._next_meaningful_token(tokens, index)
+        if next_tok is None or next_tok in self.conjunctions:
+            return False
+        if (
+            next_tok in self.nouns
+            or next_tok in self.qualifiers
+            or next_tok in self.relative_adjectives
+        ):
+            return True
+        return any(
+            p.tag.POS in {"NOUN", "ADJF", "PRTF"}
+            for p in self.morph.parse(next_tok)
+        )
+
+
+    def _possessive_owner(self, token: str) -> Optional[str]:
+        """Притяжательное прилагательное («мамин») → владелец.
+
+        Леммы на «-ин» дают владельца через основу + «-а»:
+        мамин → мама, папин → папа, бабушкин → бабушка.
+        """
+        for p in self.morph.parse(token):
+            if p.tag.POS != "ADJF" or "Poss" not in str(p.tag):
+                continue
+            lemma = p.normal_form.replace("ё", "е")
+            if lemma.endswith("ин"):
+                return lemma[:-2] + "а"
+        return None
+
+
+    def _standalone_possessive(
+        self, token: str, tokens: list[str], index: int
+    ) -> Optional[str]:
+        """Каноническая форма притяжательного-лексемы.
+
+        «мой/твой/наш/ваш/свой» и их склонённые формы сохраняются
+        как отдельные неизменяемые лексемы.
+        """
+        for p in self.morph.parse(token):
+            if p.tag.POS != "ADJF" or "Apro" not in str(p.tag):
+                continue
+            lemma = p.normal_form.replace("ё", "е")
+            if lemma not in _STANDALONE_POSSESSIVE_LEMMAS:
+                continue
+            # «мой/моя/мою/моё» омонимичны формам глагола «мыть».
+            if self._has_competing_verb_parse(token, p):
+                if not self._possessive_agrees_with_next(
+                    token, p, tokens, index
+                ):
+                    return None
+                # При согласовании всё ещё возможен глагол; для
+                # явного императива «мой» отдаём приоритет глаголу,
+                # если перед существительным нет типичного
+                # притяжательного контекста с согласованием.
+                if token == "мой" and self._has_imperative_parse(token):
+                    # «мой дом» (согласование) — притяжание;
+                    # «мой руки» (нет) — уже отсеяно выше.
+                    return lemma
+            return lemma
+        return None
+
+
+    def _has_competing_verb_parse(self, token: str, poss_parse) -> bool:
+        """Есть неглагольно-притяжательный разбор того же токена как глагола."""
+        for p in self.morph.parse(token):
+            if p.tag.POS in {"VERB", "INFN", "GRND"}:
+                if p.normal_form.replace("ё", "е") == "мыть":
+                    return True
+        return False
+
+
+    def _possessive_agrees_with_next(
+        self, token: str, poss_parse, tokens: list[str], index: int
+    ) -> bool:
+        """Грубая проверка согласования притяжательного со следующим именем."""
+        next_tok = self._next_meaningful_token(tokens, index)
+        if next_tok is None:
+            return False
+        next_parses = self.morph.parse(next_tok)
+        for np in next_parses:
+            if np.tag.POS not in {"NOUN", "ADJF", "PRTF"}:
+                continue
+            # Сравниваем число/род/падеж где применимо.
+            if poss_parse.tag.number and np.tag.number:
+                if poss_parse.tag.number != np.tag.number:
+                    continue
+            if poss_parse.tag.gender and np.tag.gender:
+                if (
+                    poss_parse.tag.number == "sing"
+                    and np.tag.number == "sing"
+                    and poss_parse.tag.gender != np.tag.gender
+                ):
+                    continue
+            if poss_parse.tag.case and np.tag.case:
+                if poss_parse.tag.case == np.tag.case:
+                    return True
+                # Одушевлённый винительный ~ родительный — пропускаем
+                # строгую проверку падежа.
+            return True
+        return False
+
+
+    def _has_imperative_parse(self, token: str) -> bool:
+        """Есть разбор императива глагола."""
+        for p in self.morph.parse(token):
+            if p.tag.POS == "VERB" and "impr" in str(p.tag):
+                return True
+        return False
+
+
+    def _is_my_verb_form(
+        self, token: str, tokens: list[str], index: int
+    ) -> bool:
+        """Токен — форма глагола «мыть», а не притяжательное «мой»."""
+        # Только неоднозначные с притяжательным «мой» формы.
+        if token not in {"мой", "моя", "мою", "мое", "моём", "моем"}:
+            return False
+        poss_parse = None
+        has_wash = False
+        for p in self.morph.parse(token):
+            lemma = p.normal_form.replace("ё", "е")
+            if p.tag.POS in {"VERB", "INFN", "GRND"} and lemma == "мыть":
+                has_wash = True
+            if p.tag.POS == "ADJF" and "Apro" in str(p.tag) and lemma == "мой":
+                poss_parse = p
+        if not has_wash or poss_parse is None:
+            return False
+        # Если есть согласованное именное зависимое — притяжание.
+        if self._possessive_agrees_with_next(
+            token, poss_parse, tokens, index
+        ):
+            return False
+        # «мой руки» — императив с несогласованным объектом.
+        # Одиночное/предикативное «мой» оставляем притяжанием.
+        next_tok = self._next_meaningful_token(tokens, index)
+        if next_tok is None:
+            return False
+        for np in self.morph.parse(next_tok):
+            if np.tag.POS in {"NOUN", "ADJF", "PRON", "NPRO"}:
+                return True
+        return False
+
+
+    def _fronted_accusative_object(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """Имя перед сказуемым при явном подлежащем: «мы заявления
+        принимаем». Собственная forme nomn у имени здесь не мешает —
+        подлежащее уже выражено отдельным словом слева."""
+        if not any(
+            p.tag.POS in {"NOUN", "NPRO"}
+            and p.tag.case == "accs"
+            for p in self.morph.parse(tokens[index])
+        ):
+            return False
+        subject_before = False
+        for tok in tokens[:index]:
+            if self._is_punctuation(tok):
+                continue
+            if any(
+                p.tag.POS in {"NPRO", "NOUN"} and p.tag.case == "nomn"
+                for p in self.morph.parse(tok)
+            ):
+                subject_before = True
+                break
+        if not subject_before:
+            return False
+        for tok in tokens[index + 1:]:
+            if self._is_punctuation(tok):
+                continue
+            if any(p.tag.POS in {"VERB", "INFN"} for p in self.morph.parse(tok)):
+                return True
+        return False
+
+    def _should_defer_direct_object(
+        self,
+        token: str,
+        tokens: list[str],
+        index: int,
+        verb_emitted: bool,
+        pending_preposition: Optional[str],
+        preposition_applied: bool,
+    ) -> bool:
+        """Прямое дополнение перед сказуемым → отложить для SVO."""
+        if verb_emitted or pending_preposition or preposition_applied:
+            return False
+        if token in _DATIVE_PRONOUNS:
+            return False
+        if self._fronted_accusative_object(tokens, index):
+            return True
+        # Личные/возвратные местоимения в винительном (объектном) значении.
+        acc_forms = {
+            "меня", "тебя", "его", "ее", "её", "нас", "вас", "их",
+            "себя", "него", "нее", "неё", "них",
+        }
+        if token in acc_forms:
+            # Исключаем именительный: «он/она/оно/они» сюда не попадают.
+            # «его/её/их» могут быть притяжательными — те обрабатываются раньше.
+            # Нужен разбор с объектным падежом.
+            for p in self.morph.parse(token):
+                if p.tag.POS in {"NPRO", "PRON"} and p.tag.case in {"accs", "gent"}:
+                    lemma = p.normal_form.replace("ё", "е")
+                    if lemma in {"я", "ты", "он", "она", "оно", "мы", "вы", "они", "себя"}:
+                        return True
+            return token in {"меня", "тебя", "нас", "вас", "себя"}
+        # Имена/существительные в аккузативе перед глаголом — осторожно,
+        # чтобы не сломать SVO, где объект уже после глагола (нормальный случай
+        # сюда не попадает, т.к. глагол ещё не встречен в SOV/OVS).
+        # Ограничимся явным SOV/OSV с неодушевлённым/одушевлённым acc
+        # только если это не подлежащее (nomn).
+        has_nomn_subject = any(
+            p.tag.case == "nomn" and p.tag.POS in {"NPRO", "PRON", "NOUN"}
+            for p in self.morph.parse(token)
+        )
+        if has_nomn_subject:
+            return False
+        has_acc = any(
+            p.tag.case == "accs" and p.tag.POS in {"NOUN", "NPRO", "PRON"}
+            for p in self.morph.parse(token)
+        )
+        if not has_acc:
+            return False
+        # Проверяем, что дальше в предложении есть глагол-сказуемое,
+        # иначе это может быть не SOV.
+        for j in range(index + 1, len(tokens)):
+            t = tokens[j]
+            if self._is_punctuation(t):
+                continue
+            for p in self.morph.parse(t):
+                if p.tag.POS in {"VERB", "INFN"}:
+                    return True
+            # причастие-предикат тоже возможно, но лучше быть консервативным
+        return False
+
+
+    def _is_form_of(self, token: str, lemma: str) -> bool:
+        return any(
+            p.normal_form.replace("ё", "е") == lemma
+            for p in self.morph.parse(token)
+        )
+
+
+    def _accusative_context(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """Паттерн «V + прилагательное + существительное»:
+        винительный падеж одушевлённого совпадает с родительным,
+        родительный маркер не нужен («вижу большого человека»)."""
+        meaningful = [
+            t for t in tokens[:index] if not self._is_punctuation(t)
+        ]
+        if len(meaningful) < 2:
+            return False
+        adj, verb = meaningful[-1], meaningful[-2]
+        if not any(
+            p.tag.POS in {"VERB", "INFN"}
+            for p in self.morph.parse(verb)
+        ):
+            return False
+        return any(
+            p.tag.POS in {"ADJF", "PRTF"}
+            for p in self.morph.parse(adj)
+        )
+
+
+    def _plural_modifier_before(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """Предыдущее значимое слово — множественное прилагательное,
+        причастие или определитель («заинтересованные стороны»)."""
+        prev = None
+        for tok in tokens[:index]:
+            if not self._is_punctuation(tok):
+                prev = tok
+        if prev is None:
+            return False
+        # Само количественное слово тоже может иметь множественный
+        # разбор («многие» = ADJF plur) — оно не создаёт plural_ctx.
+        if prev in {
+            "много", "многие", "многих", "многим",
+            "несколько", "нескольких", "множество",
+        }:
+            return False
+        # «его книга» / «его книги»: неопределённая форма 3-го лица
+        # сама по себе не делает следующее имя множественным.
+        # Но слабо различаемые формы («книги») всё же должны получить
+        # маркер «много», поэтому смотрим разбор самого имени.
+        if prev in _AMBIGUOUS_POSSESSIVES and index < len(tokens):
+            return any(
+                p.tag.POS == "NOUN" and p.tag.number == "plur"
+                for p in self.morph.parse(tokens[index])
+            )
+        for p in self.morph.parse(prev):
+            if (
+                p.tag.POS in {"ADJF", "PRTF", "PRTS"}
+                and p.tag.number == "plur"
+            ):
+                return True
+        return False
+
+
+    def _quantifier_before(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """Перед существительным стоит количественное слово."""
+        prev = None
+        for tok in tokens[:index]:
+            if not self._is_punctuation(tok):
+                prev = tok
+        if prev is None:
+            return False
+        if prev in {
+            "много", "многие", "многих", "многим",
+            "несколько", "нескольких", "множество",
+        }:
+            return True
+        return self._is_numeral(prev)
+
+    # ═══════════════════════════════════════════
+    # TAM + ASPECT
+    # ═══════════════════════════════════════════
+
+
+    def _is_existential_context(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        before = tokens[:index]
+        if "у" in before:
+            return True
+        if any(prep in before for prep in ("в", "на")):
+            return True
+        return False
+
+    # ═══════════════════════════════════════════
+    # СРАВНИТЕЛЬНАЯ СТЕПЕНЬ (§5.4)
+    # ═══════════════════════════════════════════
+
+
+    def _comparison_context(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """Контекст сравнения: COMP-форма с именным подлежащим слева.
+        «Больше людей пришло» — количественное слово: подлежащего
+        слева нет. «Беги быстрее» — наречие: слева глагол,
+        а не имя. Стандарт сравнения («меня», «брата») необязателен:
+        «это хуже» → «этот более плохой»."""
+        prev = None
+        for tok in tokens[:index]:
+            if not self._is_punctuation(tok):
+                prev = tok
+        if prev is None:
+            return False
+        if not self._is_nominal(prev) and prev not in self.pronouns:
+            return False
+        return True
+
+
+    def _comparative_positive(self, token: str) -> Optional[str]:
+        """COMP-форма → полная каноническая форма прилагательного.
+
+        Лемма COMP у pymorphy обычно уже прилагательное
+        («больше» → «большой»); у слов типа «выше» лемма —
+        наречие «высоко», и полная форма выводится заменой
+        конечного «-о» на «-ий»/«-ой». Если полной формы в
+        лексиконе нет, слово не трогаем."""
+        for p in self.morph.parse(token):
+            if p.tag.POS != "COMP":
+                continue
+            lemma = p.normal_form.replace("ё", "е")
+            if lemma in self.qualifiers:
+                return self.qualifiers[lemma]
+            for candidate in (lemma[:-1] + "ий", lemma[:-1] + "ой"):
+                if candidate in self.qualifiers:
+                    return self.qualifiers[candidate]
+            return None
+        return None
+
+    # ═══════════════════════════════════════════
+    # Родительный → у
+    # ═══════════════════════════════════════════
+
+
+    def _find_passive_agent(
+        self, tokens: list[str], verb_index: int
+    ) -> Optional[int]:
+        for index in range(verb_index + 1, len(tokens)):
+            token = tokens[index]
+            if self._is_punctuation(token):
+                continue
+            if token in self.prepositions or token in self.conjunctions:
+                continue
+            if self._is_animate_instrumental(token):
+                return index
+            if self._is_nominal(token):
+                return None
+        return None
+
