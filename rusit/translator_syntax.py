@@ -27,7 +27,7 @@ class SyntaxMixin:
         i = 0
         while i < len(result):
             token = result[i]
-            if not self._is_attributive_participle(token):
+            if not self._is_attributive_participle(token, i):
                 i += 1
                 continue
 
@@ -62,7 +62,20 @@ class SyntaxMixin:
         return result
 
 
-    def _is_attributive_participle(self, token: str) -> bool:
+    def _is_attributive_participle(
+        self, token: str, index: int | None = None
+    ) -> bool:
+        """spaCy уточняет морфологию: dep=acl/amod — определительное
+        причастие, ROOT/conj — сказуемое, а не определение."""
+        if index is not None:
+            dep = self._spacy_dep(index)
+            if dep in {"ROOT", "conj", "ccomp"}:
+                return False
+            if (
+                dep in {"acl", "amod"}
+                and self._spacy_morph(index, "VerbForm") == "part"
+            ):
+                return True
         for p in self.morph.parse(token):
             if p.tag.POS not in {"PRTF", "PRTS"}:
                 continue
@@ -151,6 +164,12 @@ class SyntaxMixin:
         В остальных позициях это личные местоимения:
         «вижу его» → «види он», а не «види у он».
         """
+        pos = self._spacy_pos(index)
+        dep = self._spacy_dep(index)
+        if pos == "DET" and dep in {"det", "nmod", "amod"}:
+            return True
+        if pos == "PRON" and dep in {"obj", "iobj", "obl"}:
+            return False
         next_tok = self._next_meaningful_token(tokens, index)
         if next_tok is None or next_tok in self.conjunctions:
             return False
@@ -339,6 +358,12 @@ class SyntaxMixin:
             return False
         if token in _DATIVE_PRONOUNS:
             return False
+        dep = self._spacy_dep(index)
+        if dep == "nsubj":
+            return False
+        head_index = self._spacy_head_index(index)
+        if dep in {"obj", "iobj"} and head_index is not None:
+            return head_index > index
         if self._fronted_accusative_object(tokens, index):
             return True
         # Личные/возвратные местоимения в винительном (объектном) значении.
@@ -536,6 +561,9 @@ class SyntaxMixin:
     def _find_passive_agent(
         self, tokens: list[str], verb_index: int
     ) -> Optional[int]:
+        agent_index = self._spacy_agent_index(verb_index)
+        if agent_index is not None:
+            return agent_index
         for index in range(verb_index + 1, len(tokens)):
             token = tokens[index]
             if self._is_punctuation(token):

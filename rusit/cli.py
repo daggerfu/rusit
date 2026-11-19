@@ -85,8 +85,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     tr.add_argument("--db", help="путь к SQLite-базе лексикона")
     tr.add_argument(
-        "--spacy", action="store_true",
-        help="использовать spaCy для синтаксического разбора",
+        "--spacy", action="store_true", default=True,
+        help="использовать spaCy (по умолчанию)",
+    )
+    tr.add_argument(
+        "--no-spacy", dest="spacy", action="store_false",
+        help="отключить spaCy и использовать только pymorphy3",
     )
     tr.add_argument(
         "--spacy-model", default="ru_core_news_sm",
@@ -109,8 +113,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     repl.add_argument("--db", help="путь к SQLite-базе лексикона")
     repl.add_argument(
-        "--spacy", action="store_true",
-        help="использовать spaCy для синтаксического разбора",
+        "--spacy", action="store_true", default=True,
+        help="использовать spaCy (по умолчанию)",
+    )
+    repl.add_argument(
+        "--no-spacy", dest="spacy", action="store_false",
+        help="отключить spaCy и использовать только pymorphy3",
     )
     repl.add_argument(
         "--spacy-model", default="ru_core_news_sm",
@@ -123,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd in {"repl", "echo"}:
         translator = RusitTranslator(
             db_path=getattr(args, "db", None),
-            use_spacy=getattr(args, "spacy", False),
+            use_spacy=args.spacy,
             spacy_model=getattr(args, "spacy_model", "ru_core_news_sm"),
         )
         prompt = sys.stdin.isatty() and sys.stdout.isatty()
@@ -177,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
 
         translator = RusitTranslator(
             db_path=args.db,
-            use_spacy=getattr(args, "spacy", False),
+            use_spacy=args.spacy,
             spacy_model=getattr(args, "spacy_model", "ru_core_news_sm"),
         )
         markdown_suffixes = {

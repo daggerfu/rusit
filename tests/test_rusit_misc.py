@@ -245,3 +245,54 @@ class TestPerformance:
             tr.translate(s)
         elapsed = time.time() - start
         assert elapsed < 10.0, f"Слишком медленно: {elapsed:.3f}s"
+
+
+
+# ═══════════════════════════════════════════════
+# 27. SPACY-АНАЛИЗ
+# ═══════════════════════════════════════════════
+
+
+def _spacy_model_available() -> bool:
+    try:
+        import spacy
+    except ImportError:
+        return False
+    return "ru_core_news_sm" in spacy.util.get_installed_models()
+
+
+@pytest.mark.skipif(
+    not _spacy_model_available(),
+    reason="нужна модель ru_core_news_sm",
+)
+class TestSpacyMode:
+    """Синтаксический разбор включён по умолчанию."""
+
+    def test_spacy_enabled_by_default(self):
+        tr = RusitTranslator()
+        assert tr.use_spacy is True
+        assert tr.nlp is not None
+
+    def test_spacy_features_after_translation(self):
+        tr = RusitTranslator()
+        tr.translate("Я читаю книгу.")
+        assert tr._spacy_lemma(0) == "я"
+        assert tr._spacy_pos(2) == "NOUN"
+
+    def test_spacy_svo_order(self):
+        tr = RusitTranslator()
+        assert tr.translate("Три человека пришли.") == (
+            "три человек кон приходи"
+        )
+
+    def test_spacy_passive_agent(self):
+        tr = RusitTranslator()
+        assert tr.translate("Книга была написана братом.") == (
+            "книга был кон пиши би брат"
+        )
+
+    def test_spacy_can_be_disabled(self):
+        tr = RusitTranslator(use_spacy=False)
+        assert tr.use_spacy is False
+        assert tr.nlp is None
+        assert tr.translate("Я читаю книгу.") == "я чита книга"

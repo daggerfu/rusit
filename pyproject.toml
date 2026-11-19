@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rusit"
-version = "0.1.0"
+version = "5.3.1"
 description = "Utilities for the RUSIT 5.3.1 analytic Russian-based language"
 requires-python = ">=3.10"
 dependencies = [

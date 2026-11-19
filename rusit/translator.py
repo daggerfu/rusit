@@ -25,13 +25,16 @@ from .translator_syntax import SyntaxMixin
 from .translator_verbs import VerbsMixin
 
 
+_NLP_CACHE: dict[str, object] = {}
+
+
 class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
 
     def __init__(
         self,
         lexicon_path: str | Path = "rusit_lexicon.json",
         db_path: str | Path | None = None,
-        use_spacy: bool = False,
+        use_spacy: bool = True,
         spacy_model: str = "ru_core_news_sm",
     ):
         if db_path is not None:
@@ -100,7 +103,8 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
         self.spacy_model = spacy_model
         self.nlp = None
         self._spacy_doc = None
-        self._spacy_token_map: dict[int, object] = {}
+        self._spacy_token_map: dict[int, int] = {}
+        self._spacy_reverse_map: dict[int, int] = {}
         if use_spacy:
             try:
                 import spacy
@@ -109,14 +113,17 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
                     "spaCy не установлен. Установите пакет spacy и "
                     "русскую модель (например, ru_core_news_sm)."
                 ) from exc
-            try:
-                self.nlp = spacy.load(spacy_model)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Не удалось загрузить spaCy-модель '{spacy_model}'. "
-                    "Установите модель, например: "
-                    "python3 -m spacy download ru_core_news_sm"
-                ) from exc
+            self.nlp = _NLP_CACHE.get(spacy_model)
+            if self.nlp is None:
+                try:
+                    self.nlp = spacy.load(spacy_model)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Не удалось загрузить spaCy-модель '{spacy_model}'. "
+                        "Установите модель, например: "
+                        "python3 -m spacy download ru_core_news_sm"
+                    ) from exc
+                _NLP_CACHE[spacy_model] = self.nlp
 
         self.wh_words = {
             "кто", "что", "какой", "какая", "какое", "какие",
@@ -190,19 +197,18 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
         tokens = tokenize(sentence)
         if not tokens:
             return ""
-        self._spacy_doc = None
-        self._spacy_token_map = {}
-        if self.nlp is not None:
-            self._spacy_doc = self.nlp(sentence)
-            self._spacy_token_map = self._build_spacy_token_map(
-                tokens, self._spacy_doc
-            )
+        self._prepare_spacy(tokens, sentence)
+        original_tokens = list(tokens)
 
         tokens = self._normalize_imperative_constructions(tokens)
 
         # Причастные обороты → «который» + клауза (§15.3):
         # перестройка порядка, а не замена окончаний.
         tokens = self._restructure_participles(tokens)
+
+        # После перестройки токены уже не совпадают с исходным разбором.
+        if tokens != original_tokens:
+            self._prepare_spacy(tokens)
 
         question = "?" in tokens
         exclamation = "!" in tokens

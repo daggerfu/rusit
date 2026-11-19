@@ -26,8 +26,11 @@ python3 -m rusit.cli translate -i README.md -o README.rusit.md
 python3 -m rusit.cli translate -i document.txt --format markdown
 # принудительно включить режим Markdown: --format markdown или --markdown
 
-python3 -m rusit.cli translate --spacy "Я читаю книгу."
-# опционально: синтаксический разбор через spaCy (нужна модель, напр. ru_core_news_sm)
+python3 -m rusit.cli translate "Я читаю книгу."
+# синтаксический разбор через spaCy включён по умолчанию (нужна модель ru_core_news_sm)
+
+python3 -m rusit.cli translate --no-spacy "Я читаю книгу."
+# отключить spaCy и использовать только pymorphy3
 
 python3 -m rusit.cli repl
 # интерактивный режим (русский → РУСИТ), выход: Ctrl+D, Ctrl+C или /exit
@@ -53,4 +56,6 @@ validator = RusitValidator()
 print(validator.validate("мы буд строи дом").ok)
 ```
 
-Для морфологии требуется `pymorphy3`; для полноценного синтаксического разбора доступна опциональная интеграция со `spaCy` (нужна установленная модель, например `ru_core_news_sm`). Тесты запускаются через `pytest`.
+Единственный лексикон — `rusit_lexicon.json` в корне репозитория; путь по умолчанию относительный, поэтому запускайте из корня или передавайте `lexicon_path` явно.
+
+Для морфологии требуется `pymorphy3`; синтаксический разбор через `spaCy` включён по умолчанию (нужна установленная модель `ru_core_news_sm`, отключение — `use_spacy=False` или `--no-spacy`). Тесты запускаются через `pytest`.

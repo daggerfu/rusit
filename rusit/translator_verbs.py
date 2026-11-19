@@ -102,7 +102,11 @@ class VerbsMixin:
             candidates[0],
         )
 
-        lemma = parse.normal_form
+        lemma = parse.normal_form.replace("ё", "е")
+        if lemma not in self.verbs:
+            spacy_lemma = self._spacy_lemma(index)
+            if spacy_lemma in self.verbs:
+                lemma = spacy_lemma
 
         if lemma == "быть":
             return None
