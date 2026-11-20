@@ -23,7 +23,6 @@ def validator():
     return RusitValidator()
 
 
-
 # ═══════════════════════════════════════════════
 # 14. ПРИДАТОЧНЫЕ ПРЕДЛОЖЕНИЯ
 # ═══════════════════════════════════════════════
@@ -53,7 +52,6 @@ class TestSubordinateClauses:
     def test_esli_clause(self, tr):
         result = tr.translate("Если ты придёшь, я буду рад.")
         assert "если" in result
-
 
 
 # ═══════════════════════════════════════════════
@@ -97,7 +95,6 @@ class TestImperative:
         assert tr.translate(text) == expected
 
 
-
 # ═══════════════════════════════════════════════
 # 16. МОДАЛЬНОСТЬ
 # ═══════════════════════════════════════════════
@@ -116,7 +113,6 @@ class TestModality:
     def test_nelzya(self, tr):
         result = tr.translate("Нельзя курить.")
         assert "нельзя" in result
-
 
 
 # ═══════════════════════════════════════════════
@@ -143,6 +139,22 @@ class TestSVOReordering:
             "мы принима заявление"
         )
 
+    def test_second_clause_object_after_verb(self, tr):
+        """Дополнение своей клаузы откладывается и после союза."""
+        assert tr.translate(
+            "Собака кошку укусила и ее на дерево загнала."
+        ) == "собака кон укуси кошка и загна она на дерево"
+
+    def test_second_clause_pronoun_object_after_verb(self, tr):
+        assert tr.translate("Я книгу читаю и ее перечитываю.") == (
+            "я чита книга и перечитыва она"
+        )
+
+    def test_adverbial_after_object(self, tr):
+        """Низкое обстоятельство идёт после дополнения (§16.1)."""
+        assert tr.translate("Он книгу на стол положил.") == (
+            "он кон положи книга на стол"
+        )
 
 
 # ═══════════════════════════════════════════════
@@ -170,7 +182,6 @@ class TestDiscourseMarkers:
         assert "прям" in result
 
 
-
 # ═══════════════════════════════════════════════
 # 23. РЕГИСТРЫ
 # ═══════════════════════════════════════════════
@@ -191,3 +202,72 @@ class TestRegisters:
         tr.set_register("neutral")
 
 
+# ═══════════════════════════════════════════════
+# 24. ПРИЧАСТИЯ И ПАССИВНЫЙ АГЕНТ
+# ═══════════════════════════════════════════════
+
+class TestParticipleClauses:
+    """Причастные обороты и агент пассива (§14, §15.3).
+
+    Случаи проверяют, что spaCy-разбор (включён по умолчанию)
+    не сбивает индексы после перестройки и не путает
+    однородные определения со сказуемыми."""
+
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            (
+                "Созданные артефакты и написанные книги лежали.",
+                "артефакт который кон созда и "
+                "книга который пиши был лежи.",
+            ),
+            (
+                "Созданные и написанные книги лежали.",
+                "кон созда и книга который пиши был лежи.",
+            ),
+            (
+                "Дом, построенный отцом, стоял.",
+                "дом, который кон строи би отец, был стоя.",
+            ),
+        ],
+    )
+    def test_attributive_participles(self, tr, text, expected):
+        assert tr.translate(text, preserve_punctuation=True) == expected
+
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            (
+                "Книга была написана братом.",
+                "книга был кон пиши би брат.",
+            ),
+            (
+                "Письмо было написано ручкой.",
+                "письмо был кон пиши с ручка.",
+            ),
+            (
+                "Задание было выполнено компьютером.",
+                "задание был кон выполни с компьютер.",
+            ),
+        ],
+    )
+    def test_passive_agent_vs_instrument(self, tr, text, expected):
+        assert tr.translate(text, preserve_punctuation=True) == expected
+
+    def test_unknown_participle_kept_asis(self, tr):
+        """Причастие без глагольной лексемы не даёт «который» вслепую."""
+        assert tr.translate(
+            "Искусственный аналитический язык, "
+            "использующий русскую лексику.",
+            preserve_punctuation=True,
+        ) == (
+            "искусственный аналитический язык, "
+            "использующий русский лексика."
+        )
+
+    def test_preverbal_agent_not_duplicated(self, tr):
+        result = tr.translate(
+            "Братом была написана книга.", preserve_punctuation=True
+        )
+        assert result.count("брат") == 1
+        assert "би" not in result

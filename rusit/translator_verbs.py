@@ -7,7 +7,10 @@ from typing import Optional
 
 class VerbsMixin:
     def _process_imperative(
-        self, token: str
+        self,
+        token: str,
+        tokens: list[str] | None = None,
+        index: int | None = None,
     ) -> Optional[List[str]]:
         parses = self.morph.parse(token)
 
@@ -57,9 +60,30 @@ class VerbsMixin:
         result = [lexeme]
         if reflexive:
             result.append(self._particle("reflexive", "ся"))
-        if "plur" in tag_str:
+        if "plur" in tag_str and not self._explicit_you(tokens, index):
             result.insert(0, self._particle("imperative_you", "вы"))
         return result
+
+
+    def _explicit_you(
+        self,
+        tokens: list[str] | None,
+        index: int | None,
+    ) -> bool:
+        """Подлежащее «вы» уже стоит перед императивом (§8.1).
+
+        Пропускаем отрицание/частицы: «вы не читайте» — тоже с
+        явным подлежащим. Запятая открывает новую клаузу."""
+        if tokens is None or index is None:
+            return False
+        for j in range(index - 1, -1, -1):
+            tok = tokens[j]
+            if self._is_punctuation(tok):
+                return False
+            if tok in {"не", "уже", "ещё", "еще", "да", "же", "ли", "бы"}:
+                continue
+            return tok == "вы"
+        return False
 
 
     def _imperative_from_lexeme(self, lexeme: str) -> str:
@@ -83,7 +107,7 @@ class VerbsMixin:
             p
             for p in parses
             if p.tag.POS in {
-                "VERB", "INFN", "PRTF", "PRTS", "GRND", "ADJS",
+                "VERB", "INFN", "PRTF", "PRTS", "ADJS",
             }
         ]
         if not candidates:
@@ -166,7 +190,7 @@ class VerbsMixin:
                 p.score
                 for p in parses
                 if p.tag.POS
-                in {"VERB", "INFN", "PRTF", "PRTS", "GRND"}
+                in {"VERB", "INFN", "PRTF", "PRTS"}
             )
             if verb_mass < 0.5:
                 return None
@@ -350,6 +374,56 @@ class VerbsMixin:
     # ═══════════════════════════════════════════
 
 
+    def _instrumental_np_started(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """Маркер «с» уже открыл эту именную группу.
+
+        Маркер ставится один раз на NP (§13): «с красный ручка», а не
+        «красный с ручка». У прилагательного творительный разбор может
+        быть маловероятным («красной» — 0.12), поэтому сохраняем
+        группу и после прилагательного."""
+        for j in range(index - 1, -1, -1):
+            prev = tokens[j]
+            if self._is_punctuation(prev):
+                return False
+            if prev in self.prepositions or prev in self.conjunctions:
+                return False
+            if self._is_instrumental(prev):
+                return True
+            return self._is_adjectival(prev)
+        return False
+
+
+    def _is_gerund(self, token: str) -> bool:
+        """Деепричастие: застывшая форма сохраняется как есть (§15.4)."""
+        return any(
+            p.tag.POS == "GRND"
+            for p in self.morph.parse(token)
+        )
+
+
+    def _is_adjectival(self, token: str) -> bool:
+        return any(
+            p.tag.POS in {"ADJF", "PRTF"}
+            for p in self.morph.parse(token)
+        )
+
+
+    def _is_instrumental_modifier(
+        self, token: str, tokens: list[str], index: int
+    ) -> bool:
+        """Прилагательное при творительном существительном.
+
+        pymorphy нередко даёт творительному прилагательному низкую
+        вероятность («красной ручкой»), поэтому группу распознаём по
+        существительному справа."""
+        if not self._is_adjectival(token):
+            return False
+        next_tok = self._next_meaningful_token(tokens, index)
+        return next_tok is not None and self._is_instrumental(next_tok)
+
+
     def _is_instrumental(self, token: str) -> bool:
         for parse in self.morph.parse(token):
             if (
@@ -367,13 +441,18 @@ class VerbsMixin:
         """Одушевлённое существительное в творительном —
         кандидат в агенты пассива. Неодушевлённое («артефактами»)
         — главное слово причастия, а не агент."""
+        personal = {"я", "ты", "он", "она", "мы", "вы", "они", "себя"}
         for parse in self.morph.parse(token):
+            tag = str(parse.tag)
             if (
                 parse.tag.POS == "NOUN"
-                and "ablt" in str(parse.tag)
-                and "anim" in str(parse.tag)
+                and "ablt" in tag
+                and "anim" in tag
             ):
                 return True
+            if parse.tag.POS in {"NPRO", "PRON"} and "ablt" in tag:
+                if parse.normal_form.replace("ё", "е") in personal:
+                    return True
         return False
 
     # ═══════════════════════════════════════════

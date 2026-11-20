@@ -320,6 +320,30 @@ class NominalsMixin:
         )
 
 
+    _ORDINAL_CARDINALS = {
+        "первый": "один",
+        "второй": "два",
+        "третий": "три",
+        "четвертый": "четыре",
+        "пятый": "пять",
+        "шестой": "шесть",
+        "седьмой": "семь",
+        "восьмой": "восемь",
+        "девятый": "девять",
+        "десятый": "десять",
+    }
+
+
+    def _ordinal_cardinal(self, token: str) -> Optional[str]:
+        """Порядковое прилагательное → числительное для «номер» (§6.3)."""
+        for parse in self.morph.parse(token):
+            if parse.tag.POS not in {"ADJF", "ADJS"}:
+                continue
+            lemma = parse.normal_form.replace("ё", "е")
+            return self._ORDINAL_CARDINALS.get(lemma)
+        return None
+
+
     def _numeral_base(self, token: str) -> str:
         if re.fullmatch(r"\d+", token):
             return token

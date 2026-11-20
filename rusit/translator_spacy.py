@@ -102,6 +102,11 @@ class SpacyMixin:
                 continue
             if "Ins" not in child.morph.get("Case"):
                 continue
+            animacy = child.morph.get("Animacy")
+            if "Anim" not in animacy and not self._is_animate_instrumental(
+                child.text
+            ):
+                continue
             agent_index = self._spacy_reverse_map.get(child.i)
             if agent_index is not None:
                 return agent_index

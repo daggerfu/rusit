@@ -24,10 +24,15 @@ class SyntaxMixin:
         Предикативный пассив без запятой не трогаем (§14).
         """
         result = list(tokens)
+        # spaCy-разбор построен по исходным токенам, а result меняется
+        # при перестройке; храним исходный индекс рядом с каждым токеном,
+        # иначе после первой вставки/удаления разбор «съезжает».
+        # None — синтетический токен («который», запятая).
+        origin: list[int | None] = list(range(len(tokens)))
         i = 0
         while i < len(result):
             token = result[i]
-            if not self._is_attributive_participle(token, i):
+            if not self._is_attributive_participle(token, origin[i]):
                 i += 1
                 continue
 
@@ -39,6 +44,9 @@ class SyntaxMixin:
             ):
                 head = result[i - 2]
                 result[i - 2 : i + 1] = [head, ",", "который", token]
+                origin[i - 2 : i + 1] = [
+                    origin[i - 2], None, None, origin[i]
+                ]
                 i += 3
                 continue
 
@@ -53,8 +61,11 @@ class SyntaxMixin:
                 and self._agrees_in_gn(token, result[j])
             ):
                 noun = result[j]
+                noun_origin = origin[j]
                 del result[j]
+                del origin[j]
                 result[i:i] = [noun, "который"]
+                origin[i:i] = [noun_origin, None]
                 i += 3
                 continue
 
@@ -66,21 +77,61 @@ class SyntaxMixin:
         self, token: str, index: int | None = None
     ) -> bool:
         """spaCy уточняет морфологию: dep=acl/amod — определительное
-        причастие, ROOT/conj — сказуемое, а не определение."""
+        причастие, ROOT/ccomp — сказуемое. dep=conj сам по себе не
+        показателен: так же помечается однородное определение
+        («созданные и написанные книги»), поэтому проверяем голову."""
         if index is not None:
             dep = self._spacy_dep(index)
-            if dep in {"ROOT", "conj", "ccomp"}:
+            if dep in {"ROOT", "ccomp"}:
+                return False
+            if dep == "conj" and self._conj_head_is_predicate(index):
                 return False
             if (
                 dep in {"acl", "amod"}
                 and self._spacy_morph(index, "VerbForm") == "part"
             ):
-                return True
+                # Перестройка возможна, только если причастие сводится
+                # к известной глагольной лексеме. Иначе оставляем
+                # застывшую форму как есть (§15.3), без «который».
+                return any(
+                    p.tag.POS in {"PRTF", "PRTS"}
+                    and self._participle_to_verb(p.normal_form)
+                    in self.verbs
+                    for p in self.morph.parse(token)
+                )
         for p in self.morph.parse(token):
             if p.tag.POS not in {"PRTF", "PRTS"}:
                 continue
             if self._participle_to_verb(p.normal_form) in self.verbs:
                 return True
+        return False
+
+
+    def _conj_head_is_predicate(self, index: int) -> bool:
+        """Является ли голова однородного члена сказуемым.
+
+        У однородных определений голова — причастие-определение
+        (amod/acl), у однородных сказуемых — финитный глагол или
+        корневое/зависимое сказуемое."""
+        seen: set[int] = set()
+        current = index
+        while current not in seen:
+            seen.add(current)
+            head_index = self._spacy_head_index(current)
+            if head_index is None:
+                return False
+            head = self._spacy_token(head_index)
+            if head is None:
+                return False
+            if head.pos_ not in {"VERB", "AUX"}:
+                return False
+            if "Fin" in head.morph.get("VerbForm"):
+                return True
+            if head.dep_ in {"ROOT", "ccomp"}:
+                return True
+            if head.dep_ != "conj":
+                return False
+            current = head_index
         return False
 
 
@@ -154,6 +205,40 @@ class SyntaxMixin:
             if not self._is_punctuation(tok):
                 return tok
         return None
+
+
+    def _modal_predicate_ahead(
+        self, tokens: list[str], index: int
+    ) -> bool:
+        """Дальше по клаузе стоит модальный предикатор (§12)."""
+        for tok in tokens[index + 1:]:
+            if self._is_punctuation(tok):
+                return False
+            if tok in {"не", "уже", "ещё", "еще", "же", "ли", "бы"}:
+                continue
+            return tok in self.modal_predicates
+        return False
+
+
+    def _starts_new_clause(self, tokens: list[str], index: int) -> bool:
+        """После границы начинается клауза со своим подлежащим.
+
+        У такой клаузы собственный предикат, поэтому TAM-маркеры
+        предыдущей клаузы на неё не распространяются (§7.8, §21.1)."""
+        for j in range(index + 1, len(tokens)):
+            tok = tokens[j]
+            if self._is_punctuation(tok):
+                return False
+            if tok in self.relative_pronouns:
+                return True
+            if tok in self.conjunctions:
+                continue
+            return any(
+                p.tag.POS in {"NPRO", "NOUN"}
+                and "nomn" in str(p.tag)
+                for p in self.morph.parse(tok)
+            )
+        return False
 
 
     def _is_possessive_position(
@@ -349,12 +434,18 @@ class SyntaxMixin:
         token: str,
         tokens: list[str],
         index: int,
-        verb_emitted: bool,
+        predicate_index: Optional[int],
         pending_preposition: Optional[str],
         preposition_applied: bool,
     ) -> bool:
-        """Прямое дополнение перед сказуемым → отложить для SVO."""
-        if verb_emitted or pending_preposition or preposition_applied:
+        """Прямое дополнение перед сказуемым → отложить для SVO.
+
+        ``predicate_index`` — индекс последнего выданного сказуемого.
+        Сказуемое более ранней клаузы не мешает отложить дополнение
+        своей («…укусила и ее загнала» → «…укуси и загна она»), но
+        эвристики pymorphy после него уже не применяются: они путают
+        подлежащее/топик следующей клаузы с дополнением."""
+        if pending_preposition or preposition_applied:
             return False
         if token in _DATIVE_PRONOUNS:
             return False
@@ -363,10 +454,14 @@ class SyntaxMixin:
             return False
         head_index = self._spacy_head_index(index)
         if dep in {"obj", "iobj"} and head_index is not None:
-            return head_index > index
-        if self._fronted_accusative_object(tokens, index):
-            return True
+            return head_index > index and (
+                predicate_index is None
+                or head_index > predicate_index
+            )
         # Личные/возвратные местоимения в винительном (объектном) значении.
+        # spaCy на разговорном порядке ошибается («…и её на дерево
+        # загнала» → dep=case), поэтому здесь доверяем морфологии —
+        # но только если в клаузе после сказуемого есть свой глагол.
         acc_forms = {
             "меня", "тебя", "его", "ее", "её", "нас", "вас", "их",
             "себя", "него", "нее", "неё", "них",
@@ -379,8 +474,18 @@ class SyntaxMixin:
                 if p.tag.POS in {"NPRO", "PRON"} and p.tag.case in {"accs", "gent"}:
                     lemma = p.normal_form.replace("ё", "е")
                     if lemma in {"я", "ты", "он", "она", "оно", "мы", "вы", "они", "себя"}:
-                        return True
-            return token in {"меня", "тебя", "нас", "вас", "себя"}
+                        return self._has_predicate_after(
+                            tokens, index, predicate_index
+                        )
+            if token in {"меня", "тебя", "нас", "вас", "себя"}:
+                return self._has_predicate_after(
+                    tokens, index, predicate_index
+                )
+            return False
+        if predicate_index is not None:
+            return False
+        if self._fronted_accusative_object(tokens, index):
+            return True
         # Имена/существительные в аккузативе перед глаголом — осторожно,
         # чтобы не сломать SVO, где объект уже после глагола (нормальный случай
         # сюда не попадает, т.к. глагол ещё не встречен в SOV/OVS).
@@ -408,6 +513,29 @@ class SyntaxMixin:
                 if p.tag.POS in {"VERB", "INFN"}:
                     return True
             # причастие-предикат тоже возможно, но лучше быть консервативным
+        return False
+
+
+    def _has_predicate_after(
+        self,
+        tokens: list[str],
+        index: int,
+        predicate_index: Optional[int] = None,
+    ) -> bool:
+        """Есть ли в клаузе глагол после указанного токена.
+
+        Учитываются только позиции после уже выданного сказуемого:
+        глагол предыдущей клаузы объект не подтверждает."""
+        for j in range(index + 1, len(tokens)):
+            if predicate_index is not None and j <= predicate_index:
+                continue
+            if self._is_punctuation(tokens[j]):
+                continue
+            if any(
+                p.tag.POS in {"VERB", "INFN"}
+                for p in self.morph.parse(tokens[j])
+            ):
+                return True
         return False
 
 
@@ -545,6 +673,14 @@ class SyntaxMixin:
             if p.tag.POS != "COMP":
                 continue
             lemma = p.normal_form.replace("ё", "е")
+            # Супплетивные сравнительные: «старше» → «старый»
+            # (лемма у pymorphy — «старший», а не «старый»).
+            lemma = {
+                "старший": "старый",
+                "младший": "молодой",
+                "лучший": "хороший",
+                "худший": "плохой",
+            }.get(lemma, lemma)
             if lemma in self.qualifiers:
                 return self.qualifiers[lemma]
             for candidate in (lemma[:-1] + "ий", lemma[:-1] + "ой"):
@@ -562,7 +698,9 @@ class SyntaxMixin:
         self, tokens: list[str], verb_index: int
     ) -> Optional[int]:
         agent_index = self._spacy_agent_index(verb_index)
-        if agent_index is not None:
+        # Агент перед сказуемым («братом была написана книга») уже
+        # выдан в обычном порядке — второй раз его не добавляем.
+        if agent_index is not None and agent_index > verb_index:
             return agent_index
         for index in range(verb_index + 1, len(tokens)):
             token = tokens[index]

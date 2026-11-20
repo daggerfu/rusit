@@ -51,6 +51,15 @@ class TestPrepositions:
         assert "с" in result
         assert "ручка" in result
 
+    def test_instrument_marker_once_per_np(self, tr):
+        """Один маркер «с» на именную группу (§13)."""
+        assert tr.translate("Я пишу красной ручкой.") == (
+            "я пиши с красный ручка"
+        )
+        assert tr.translate("Передаются служебными словами.") == (
+            "передава ся с служебный слово"
+        )
+
     def test_location_v(self, tr):
         result = tr.translate("Я живу в городе.")
         assert "в" in result

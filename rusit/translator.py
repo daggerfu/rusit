@@ -127,6 +127,7 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
 
         self.wh_words = {
             "кто", "что", "какой", "какая", "какое", "какие",
+            "который", "которая", "которое", "которые",
             "где", "когда", "почему", "зачем", "как", "сколько",
         }
 
@@ -234,15 +235,26 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
         pending_possession: Optional[list[str]] = None
         pending_comparison = False
         deferred_objects: list[list[str]] = []
-        verb_emitted = False
+        # Индекс последнего выданного сказуемого: нужен, чтобы отличать
+        # дополнение своей клаузы от подлежащего/топика следующей.
+        last_predicate_index: Optional[int] = None
         emitted_tam: set[str] = set()
         suppress_plural_marker = False
         consumed: set[int] = set()
+        # «Мне надо идти» → «надо я иди»: дательный субъект
+        # откладывается до модального предикатора (§12).
+        deferred_modal_subject: Optional[list[str]] = None
 
         for index, token in enumerate(tokens):
             if self._is_punctuation(token):
                 if preserve_punctuation:
                     self._append_punctuation(output, token)
+                if (
+                    token in {",", ";", ":"}
+                    and self._starts_new_clause(tokens, index)
+                ):
+                    # Новая клауза со своим подлежащим: свой TAM.
+                    emitted_tam.clear()
                 continue
             if index in consumed:
                 continue
@@ -250,6 +262,8 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
             # ── Союзы ──
             if token in self.conjunctions:
                 output.extend(self.conjunctions[token].split())
+                if self._starts_new_clause(tokens, index):
+                    emitted_tam.clear()
                 continue
 
             # ── Относительное местоимение ──
@@ -283,6 +297,9 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
             # ── Модальные предикаторы ──
             if token in self.modal_predicates:
                 output.append(self.modal_predicates[token])
+                if deferred_modal_subject:
+                    output.extend(deferred_modal_subject)
+                    deferred_modal_subject = None
                 continue
 
             # ── есть ──
@@ -360,6 +377,16 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
                     suppress_plural_marker = True
                 continue
 
+            # ── Порядковые числительные → номер + числительное (§6.3) ──
+            ordinal = self._ordinal_cardinal(token)
+            if ordinal is not None:
+                if pending_preposition:
+                    output.append(pending_preposition)
+                    pending_preposition = None
+                output.append("номер")
+                output.append(ordinal)
+                continue
+
             # ── Числительные ──
             if self._is_numeral(token):
                 # Количественное слово перед множественным существительным
@@ -415,6 +442,13 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
             # «я был кон дати книга к он». При предлоге («о мне»)
             # форма предложная — «к» не добавляется.
             if token in _DATIVE_PRONOUNS and not pending_preposition:
+                if self._modal_predicate_ahead(tokens, index):
+                    # «мне надо идти» → «надо я иди»: дательный
+                    # субъект, а не адресат.
+                    deferred_modal_subject = [
+                        self.pronouns.get(token, token)
+                    ]
+                    continue
                 output.extend(["к", self.pronouns[token]])
                 continue
 
@@ -461,7 +495,7 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
                 ):
                     value = self._nominal_output(token)
                     if self._should_defer_direct_object(
-                        token, tokens, index, verb_emitted,
+                        token, tokens, index, last_predicate_index,
                         pending_preposition, preposition_applied,
                     ):
                         deferred_objects.append(value)
@@ -489,14 +523,33 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
                 continue
 
             # ── ИМПЕРАТИВ ──
-            imperative = self._process_imperative(token)
+            imperative = self._process_imperative(
+                token, tokens, index
+            )
             if imperative is not None:
-                output.extend(imperative)
-                verb_emitted = True
+                if (
+                    imperative[0] == self._particle(
+                        "imperative_you", "вы"
+                    )
+                    and output
+                    and output[-1] == self._particle("negation", "не")
+                ):
+                    # «не читайте» → «вы не чита» (§8.2).
+                    output.insert(len(output) - 1, imperative[0])
+                    output.extend(imperative[1:])
+                else:
+                    output.extend(imperative)
+                last_predicate_index = index
                 if deferred_objects:
                     for obj in deferred_objects:
                         output.extend(obj)
                     deferred_objects.clear()
+                continue
+
+            # ── Деепричастие: застывшая форма (§15.4) ──
+            if self._is_gerund(token):
+                output.append(token)
+                last_predicate_index = index
                 continue
 
             # ── Глагол / предикатор ──
@@ -504,7 +557,7 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
             if verb_result is not None:
                 result, passive = verb_result
                 output.extend(self._dedupe_tam(result, emitted_tam))
-                verb_emitted = True
+                last_predicate_index = index
 
                 if pending_preposition:
                     output.append(pending_preposition)
@@ -539,6 +592,14 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
             plural_ctx = self._plural_modifier_before(
                 tokens, index
             ) or self._verb_accusative_plural(tokens, index, token)
+            prev_tok = next(
+                (
+                    t
+                    for t in reversed(tokens[:index])
+                    if not self._is_punctuation(t)
+                ),
+                None,
+            )
             if (
                 self._is_genitive_noun(token)
                 and not self._is_plural_form(token)
@@ -546,6 +607,11 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
                 and not self._quantifier_before(tokens, index)
                 and not self._accusative_context(tokens, index)
             ):
+                if prev_tok == "нет":
+                    # «у меня нет книги» → «у я нет книга»:
+                    # отрицание уже выражено словом «нет».
+                    output.append(self._nominal_fallback(token))
+                    continue
                 if pending_comparison:
                     # Стандарт сравнения: «чем» + именительная база,
                     # без маркера «у» («выше брата» → «чем брат»).
@@ -571,11 +637,17 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
             # падеж полностью (§13): «с ручкой» → «с ручка»,
             # без дублирования маркера «с».
             if (
-                self._is_instrumental(token)
+                (
+                    self._is_instrumental(token)
+                    or self._is_instrumental_modifier(
+                        token, tokens, index
+                    )
+                )
                 and not pending_preposition
                 and not preposition_applied
             ):
-                output.append("с")
+                if not self._instrumental_np_started(tokens, index):
+                    output.append("с")
                 use_suppress = suppress_plural_marker
                 value = self._nominal_output(
                     token,
@@ -603,7 +675,7 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
                 pending_comparison = False
 
             defer_object = self._should_defer_direct_object(
-                token, tokens, index, verb_emitted,
+                token, tokens, index, last_predicate_index,
                 pending_preposition, preposition_applied,
             )
             if defer_object:
@@ -615,20 +687,37 @@ class RusitTranslator(SpacyMixin, SyntaxMixin, VerbsMixin, NominalsMixin):
                 if preposition_applied:
                     preposition_applied = False
             else:
-                if pending_preposition:
+                # Обстоятельство между отложенным дополнением и его
+                # сказуемым встаёт после дополнения (§16.1: V — O — X):
+                # «и её на дерево загнала» → «и загна она на дерево».
+                pp_deferred = bool(
+                    pending_preposition and deferred_objects
+                )
+                if pp_deferred:
+                    deferred_objects.append(
+                        [pending_preposition, *value]
+                    )
+                    pending_preposition = None
+                    if pending_possession:
+                        deferred_objects[-1].extend(
+                            pending_possession
+                        )
+                        pending_possession = None
+                elif pending_preposition:
                     output.append(pending_preposition)
                     pending_preposition = None
                 elif preposition_applied:
                     preposition_applied = False
-                output.extend(value)
+                if not pp_deferred:
+                    output.extend(value)
+                    if pending_possession:
+                        output.extend(pending_possession)
+                        pending_possession = None
                 if use_suppress and (plural_ctx or self._is_plural_form(token)) and any(
                     p.tag.POS == "NOUN" and p.score > 0.3
                     for p in self.morph.parse(token)
                 ):
                     suppress_plural_marker = False
-                if pending_possession:
-                    output.extend(pending_possession)
-                    pending_possession = None
 
             if defer_object and use_suppress and (
                 plural_ctx or self._is_plural_form(token)
